@@ -68,7 +68,7 @@ async function findDevServer() {
   for (const port of DEV_PORTS) {
     const url = `${window.location.protocol}//${window.location.hostname}:${port}`
     const health = await healthOf(url)
-    if (health?.ok && health.game === 'boulder') return url
+    if (health?.ok && health.game === 'sled') return url
   }
   return null
 }
@@ -164,9 +164,6 @@ function attachRoom(room, identity, Callbacks, relayRoomId = null) {
         break
       case 'correct':
         runtime.player.position.set(payload.x, payload.y, payload.z)
-        break
-      case 'stock':
-        getGame().setSphinxStock(payload.sphinx)
         break
       case 'leaderboards':
         getGame().setLeaderboards(payload)
@@ -393,6 +390,12 @@ export function playHere() {
 /** Moves to another lobby with the same identity (from the lobby panel). */
 export function switchLobby(lobby) {
   if (lastIdentity) startConnection(lastIdentity, lobby)
+}
+
+/** The room we're in, as Boxity knows it (`relay~colyseus` through the matchmaker), or ''. */
+export function currentRoomId() {
+  if (!currentRoom) return ''
+  return currentRoom.relayRoomId ? `${currentRoom.relayRoomId}~${currentRoom.colyseusRoomId}` : currentRoom.colyseusRoomId
 }
 
 export function isOnline() {

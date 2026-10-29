@@ -5,7 +5,9 @@ import { create } from 'zustand'
  * than deciding for itself, so dropping a preset reliably sheds load everywhere.
  *
  * LOW is the mobile / weak-PC baseline: no realtime shadows, no particles, no
- * post-processing, short view distance and textures capped at 512px.
+ * post-processing, a slightly shorter view and textures capped at 512px. The map itself
+ * is the same on every preset - every tree, cliff and prop - so a weak PC sees the same
+ * world; what LOW saves is the cost nobody sees (resolution, antialiasing, shadow maps).
  */
 export const QUALITY_LEVELS = ['LOW', 'MEDIUM', 'HIGH']
 
@@ -17,40 +19,43 @@ export const PRESETS = {
     shadows: 'blob',
     shadowMapSize: 0,
     particles: false,
+    /** Flakes of falling snow: always some, so it always feels like winter (one draw call). */
+    snowCount: 600,
     speedLines: false,
     /** Motion blur down the sides at speed (post-processing): samples a pixel, 0 = off. */
     motionBlur: 0,
-    viewDistance: 190,
-    fogNear: 60,
-    cloudCount: 8,
+    viewDistance: 280,
+    fogNear: 95,
+    cloudCount: 14,
     /** Max side of any generated texture. */
     maxTexture: 512,
     /** Other players' shadows and pets show this far away (their avatars, however far). */
     remoteDrawDistance: 150,
-    remoteNameDistance: 40,
+    remoteNameDistance: 50,
     /** World labels fade out past this. */
-    labelDistance: 70,
-    /** How much of the canyon's scenery to spawn (0-1). */
-    decorDensity: 0.45,
+    labelDistance: 110,
+    /** How much of the scenery to build (0-1): all of it, everywhere - the map never changes. */
+    decorDensity: 1,
     /** Dumbbell, egg and aura halo size multiplier. */
     glow: 0.8,
   },
   MEDIUM: {
     dpr: 1.25,
     antialias: true,
-    shadows: 'blob',
-    shadowMapSize: 0,
+    shadows: 'realtime',
+    shadowMapSize: 1024,
     particles: true,
+    snowCount: 1400,
     speedLines: true,
     motionBlur: 8,
-    viewDistance: 300,
-    fogNear: 100,
-    cloudCount: 14,
+    viewDistance: 340,
+    fogNear: 110,
+    cloudCount: 16,
     maxTexture: 1024,
     remoteDrawDistance: 150,
     remoteNameDistance: 55,
-    labelDistance: 110,
-    decorDensity: 0.75,
+    labelDistance: 130,
+    decorDensity: 1,
     glow: 1,
   },
   HIGH: {
@@ -59,6 +64,7 @@ export const PRESETS = {
     shadows: 'realtime',
     shadowMapSize: 1024,
     particles: true,
+    snowCount: 2200,
     speedLines: true,
     motionBlur: 12,
     viewDistance: 460,
@@ -84,11 +90,13 @@ function isMobileDevice() {
 }
 
 /**
- * Everyone starts on LOW, whatever the hardware: the game opens fast and smooth
- * everywhere, and anyone who wants more picks MEDIUM or HIGH in Settings (which is
- * remembered). The monitor only ever drops a level, never raises one.
+ * The starting preset: LOW on phones, tablets and PCs with 4 cores or fewer; MEDIUM on
+ * everything else. Anyone can pick another in Settings (remembered), and the monitor
+ * drops a level, never raises one, if the frame rate falls under budget. The map is the
+ * same on all of them.
  */
-export const DEFAULT_QUALITY = 'LOW'
+const weakDevice = () => isMobileDevice() || (typeof navigator !== 'undefined' && (navigator.hardwareConcurrency || 4) <= 4)
+export const DEFAULT_QUALITY = weakDevice() ? 'LOW' : 'MEDIUM'
 
 function readSaved() {
   try {
@@ -120,6 +128,19 @@ export const useQuality = create((set, get) => ({
       }
     }
     set({ level, manual, settings: PRESETS[level] })
+  },
+
+  /**
+   * AUTO: forget the hand-picked level and go back to the one detected for this device,
+   * which then drops by itself whenever the frame rate falls under budget.
+   */
+  setAuto: () => {
+    try {
+      localStorage.removeItem(STORAGE_KEY)
+    } catch {
+      // Private mode: nothing was saved.
+    }
+    set({ level: DEFAULT_QUALITY, manual: false, settings: PRESETS[DEFAULT_QUALITY] })
   },
 
   /** Called by the performance monitor when FPS stays under budget. */

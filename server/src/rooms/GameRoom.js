@@ -1,13 +1,14 @@
 import { Room } from '@colyseus/core'
 
-import { applyOfflineProgress } from '../../../shared/logic.js'
+import { AD_REWARDS } from '../../../shared/balance.js'
 import { PlayerSession } from '../../../shared/session.js'
-import { clampToWalkable, isPushReturn, MAX_MOVE_SPEED, SPAWN } from '../../../shared/world.js'
-import { isGuestId, noteScores, verifyPlayerToken } from '../boxity.js'
-import { adoptGuestProgress, getSphinxStock, loadProfile, saveProfile, takeSphinx } from '../db.js'
+import { RaceHost } from '../../../shared/race.js'
+import { clampToWalkable, isTeleportSpot, MAX_MOVE_SPEED, SPAWN } from '../../../shared/world.js'
+import { isGuestId, noteScores, verifyAdReward, verifyPlayerToken } from '../boxity.js'
+import { adoptGuestProgress, loadProfile, saveProfile } from '../db.js'
 import { getLeaderboards } from '../leaderboards.js'
-import { activePlayers, broadcastAll, liveRooms } from '../registry.js'
-import { GameState, NOT_PUSHING, PlayerState } from './schema.js'
+import { activePlayers, liveRooms } from '../registry.js'
+import { GameState, NOT_RIDING, PlayerState } from './schema.js'
 
 const MAX_CLIENTS = 8
 const RECONNECT_SECONDS = 20
@@ -23,7 +24,7 @@ const DUPLICATE_LOGIN = 4100
 const POD = process.env.POD_NAME || `local-${process.pid}`
 
 /** What other players may be told someone is doing. */
-const ANIMS = ['idle', 'walk', 'train', 'jump', 'push', 'dance']
+const ANIMS = ['idle', 'walk', 'jump', 'pull', 'ride', 'dance']
 
 /** Unambiguous characters for lobby codes people read out to each other. */
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -50,6 +51,8 @@ export class GameRoom extends Room {
    * `owner` claims the player's save for this session (see db.js).
    */
   members = new Map()
+  /** The races, every few minutes, for everyone in the room (shared/race.js). */
+  races = new RaceHost()
 
   onCreate(options = {}) {
     this.setState(new GameState())
@@ -71,6 +74,7 @@ export class GameRoom extends Room {
       if (type === 'look') return this.handleLook(client, payload)
       if (type === 'emote') return this.handleEmote(client, payload)
       if (type === 'respawn') return this.handleRespawn(client)
+      if (type === 'adReward') return this.handleAdReward(client, payload)
       const member = this.members.get(client.sessionId)
       if (!member) return
       member.session.handle(String(type), payload || {}, Date.now())
@@ -115,40 +119,37 @@ export class GameRoom extends Room {
     const now = Date.now()
     const owner = `${POD}:${client.sessionId}`
     const profile = await loadProfile(playerId, name, owner)
-    const offline = applyOfflineProgress(profile, now)
 
     const player = new PlayerState()
     const spawnX = SPAWN.x + (Math.random() - 0.5) * 6
     const spawnZ = SPAWN.z + (Math.random() - 0.5) * 4
-    Object.assign(player, { name, uid: verified && !isGuestId(playerId) ? playerId : '', x: spawnX, y: 0, z: spawnZ, rotY: Math.PI, anim: 'idle', pushMeter: NOT_PUSHING })
+    Object.assign(player, { name, uid: verified && !isGuestId(playerId) ? playerId : '', x: spawnX, y: 0, z: spawnZ, rotY: Math.PI, anim: 'idle', rideMeter: NOT_RIDING })
     this.state.players.set(client.sessionId, player)
 
     const session = new PlayerSession(profile, {
       now,
       emit: (type, payload) => client.send(type, payload),
       getPosition: () => player,
-      onPurchase: (productId) => {
-        if (productId !== 'sphinx') return true
-        const ok = takeSphinx()
-        if (ok) broadcastAll('stock', { sphinx: getSphinxStock() })
-        return ok
-      },
-      // Everyone else sees you up the track from the synced state.
-      onPush: (push) => {
-        player.pushMeter = push ? push.meter : NOT_PUSHING
-        player.pushX = push ? push.x : 0
-        player.pushPhase = push ? push.phase : ''
+      verified: Boolean(verified) && !isGuestId(playerId),
+      // Everyone else sees you down the slide from the synced state.
+      onRide: (ride) => {
+        player.rideMeter = ride ? ride.s : NOT_RIDING
+        player.rideX = ride ? ride.x : 0
+        player.rideY = ride ? ride.y || 0 : 0
       },
     })
 
     this.members.set(client.sessionId, { session, playerId, verified: Boolean(verified), owner, lastPos: { x: spawnX, z: spawnZ }, lastPosAt: now })
+    session.onJoinRace = (at) => this.races.join(client.sessionId, this.raceMember(client.sessionId), at, this.raceMembers())
+    session.onRaceStart = (raceId) => this.races.started(client.sessionId, raceId)
+    session.onRaceEnd = (raceId, s) => this.races.finished(client.sessionId, raceId, s)
     activePlayers.set(playerId, { room: this, client })
 
     session.sendProfile()
+    session.greet()
     client.send('spawn', { x: spawnX, z: spawnZ })
-    client.send('stock', { sphinx: getSphinxStock() })
     client.send('leaderboards', getLeaderboards())
-    if (offline) client.send('offline', offline)
+    this.races.hello(client.sessionId, this.raceMember(client.sessionId), now)
     this.syncPlayer(client.sessionId)
     this.updateListing()
   }
@@ -157,8 +158,6 @@ export class GameRoom extends Room {
   async onDrop(client) {
     const member = this.members.get(client.sessionId)
     if (!member || member.kicked) return
-    // Stop training while away; the seat stays warm for the reconnect.
-    member.session.handle('leaveZone', {}, Date.now())
     member.reconnection = this.allowReconnection(client, RECONNECT_SECONDS)
     try {
       await member.reconnection
@@ -184,6 +183,9 @@ export class GameRoom extends Room {
     if (member) {
       if (activePlayers.get(member.playerId)?.client === client) activePlayers.delete(member.playerId)
       this.members.delete(client.sessionId)
+      // A ride still going (the tab closed mid-ride, the connection lost for good): banked.
+      if (!member.kicked && member.session.ride) member.session.finish(Date.now(), 'left')
+      this.races.leave(client.sessionId)
       this.noteScores(member)
       if (!member.kicked) await saveProfile(member.session.profile, member.owner)
     }
@@ -211,8 +213,8 @@ export class GameRoom extends Room {
   /** Hands a verified player's scores to the Boxity leaderboard reporter. */
   noteScores(member) {
     if (!member.verified) return
-    noteScores(member.playerId, member.session.profile, member.session.winsEarned)
-    member.session.winsEarned = 0
+    noteScores(member.playerId, member.session.profile, member.session.coinsEarned)
+    member.session.coinsEarned = 0
   }
 
   /** Everyone's scores here, for the reporter's next report. */
@@ -229,6 +231,7 @@ export class GameRoom extends Room {
     const member = this.members.get(client.sessionId)
     this.state.players.delete(client.sessionId)
     if (member && !member.kicked) {
+      if (member.session.ride) member.session.finish(Date.now(), 'left')
       member.kicked = true
       await saveProfile(member.session.profile, member.owner)
       member.reconnection?.reject(new Error('replaced by a new session'))
@@ -241,8 +244,20 @@ export class GameRoom extends Room {
     }
   }
 
+  /**
+   * Saves everyone here. A save refused because the player's save now belongs to a newer
+   * session (they joined again, on another pod) means this one is stale: it's let go, so
+   * it can't go on playing on progress that will never be kept.
+   */
   saveAll() {
-    return Promise.all([...this.members.values()].map((m) => (m.kicked ? null : saveProfile(m.session.profile, m.owner))))
+    return Promise.all(
+      [...this.members.entries()].map(async ([sessionId, m]) => {
+        if (m.kicked) return
+        if (await saveProfile(m.session.profile, m.owner)) return
+        const client = this.clients.find((c) => c.sessionId === sessionId)
+        if (client && !m.kicked) await this.evict(client, 'You joined from another window.')
+      }),
+    )
   }
 
   updateListing() {
@@ -259,25 +274,17 @@ export class GameRoom extends Room {
     const player = this.state.players.get(sessionId)
     if (!member || !player) return
     const p = member.session.profile
-    if (player.muscle !== p.muscle) player.muscle = p.muscle
     if (player.world !== p.world) player.world = p.world
-    if (player.wins !== p.wins) player.wins = p.wins
-    if (player.rebirths !== p.rebirths) player.rebirths = p.rebirths
-    if (player.level !== p.level) player.level = p.level
-    if (player.dumbbellId !== p.equippedDumbbell) player.dumbbellId = p.equippedDumbbell
-    if (player.aura !== (p.equippedAura || '')) player.aura = p.equippedAura || ''
-    const pets = p.equippedPets
-      .map((uid) => p.pets.find((pet) => pet.uid === uid)?.id)
-      .filter(Boolean)
-    if (pets.join() !== [...player.petIds].join()) {
-      player.petIds.clear()
-      for (const id of pets) player.petIds.push(id)
-    }
+    if (player.sled !== p.sled) player.sled = p.sled
+    if (player.trail !== p.trail) player.trail = p.trail
+    const best = p.best[p.world] ?? 0
+    if (player.best !== best) player.best = best
   }
 
   /**
    * Position reports, ~10 Hz from each client. Accepted if the move is physically
-   * possible since the last accepted one (or is the trip back after a push);
+   * possible since the last accepted one (or lands on one of the fixed spots PLAY and
+   * the trip back after a ride take you to);
    * otherwise the client is snapped back.
    */
   handlePosition(client, msg) {
@@ -292,7 +299,7 @@ export class GameRoom extends Room {
     const now = Date.now()
     const dt = Math.max(0.05, (now - member.lastPosAt) / 1000)
     const dist = Math.hypot(x - member.lastPos.x, z - member.lastPos.z)
-    if (dist > MAX_MOVE_SPEED * dt + MOVE_SLACK && !isPushReturn(member.lastPos, { x, z })) {
+    if (dist > MAX_MOVE_SPEED * dt + MOVE_SLACK && !isTeleportSpot({ x, z })) {
       client.send('correct', { x: member.lastPos.x, y: player.y, z: member.lastPos.z })
       return
     }
@@ -332,19 +339,40 @@ export class GameRoom extends Room {
   }
 
   /**
-   * Boxity's "Reset Character": back at the spawn point at once (out of any climb), the
-   * jump allowed since it's the server that puts you there.
+   * Boxity's "Reset Character": back at the spawn point at once (out of any ride, banked),
+   * the jump allowed since it's the server that puts you there.
    */
   handleRespawn(client) {
     const member = this.members.get(client.sessionId)
     const player = this.state.players.get(client.sessionId)
     if (!member || !player) return
-    if (member.session.push) member.session.handle('endPush', { reason: 'left' }, Date.now())
+    if (member.session.ride) member.session.finish(Date.now(), 'left')
     Object.assign(player, { x: SPAWN.x, y: 0, z: SPAWN.z })
     member.lastPos = { x: SPAWN.x, z: SPAWN.z }
     member.lastPosAt = Date.now()
     client.send('spawn', { x: SPAWN.x, z: SPAWN.z })
     this.syncPlayer(client.sessionId)
+  }
+
+  /**
+   * 'adReward' `{ placement, rewardToken }`: the client watched a rewarded ad. Paid
+   * only once Boxity confirms the token; one check at a time per player.
+   */
+  async handleAdReward(client, msg) {
+    const member = this.members.get(client.sessionId)
+    const placement = String(msg?.placement || '')
+    const rewardToken = msg?.rewardToken
+    if (!member || member.adPending || !Object.hasOwn(AD_REWARDS, placement)) return
+    if (typeof rewardToken !== 'string' || !rewardToken || rewardToken.length > 4096) return
+    member.adPending = true
+    try {
+      if (!(await verifyAdReward(rewardToken))) return
+      // Still here after the wait?
+      if (this.members.get(client.sessionId) !== member || member.kicked) return
+      member.session.grantAdReward(placement, Date.now())
+    } finally {
+      member.adPending = false
+    }
   }
 
   /**
@@ -365,5 +393,19 @@ export class GameRoom extends Room {
       member.session.tick(dt, now)
       this.syncPlayer(sessionId)
     }
+    this.races.tick(now, this.raceMembers())
+  }
+
+  /** A player as the races see them: name, session, and how to reach them. */
+  raceMember(sessionId) {
+    const member = this.members.get(sessionId)
+    if (!member) return null
+    return { name: this.state.players.get(sessionId)?.name ?? 'Player', session: member.session, send: (type, payload) => member.session.emit(type, payload) }
+  }
+
+  raceMembers() {
+    const all = new Map()
+    for (const sessionId of this.members.keys()) all.set(sessionId, this.raceMember(sessionId))
+    return all
   }
 }

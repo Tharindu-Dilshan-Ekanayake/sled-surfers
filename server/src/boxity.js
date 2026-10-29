@@ -15,8 +15,29 @@ export const boxity = {
   staticUrl: (process.env.BLOXITY_STATIC_URL || 'https://static.bloxity.io').replace(/\/$/, ''),
   gameId: process.env.BLOXITY_GAME_ID || '',
   /** The game's slug on Boxity: its hosting id, unless told otherwise. */
-  gameSlug: process.env.BLOXITY_GAME_SLUG || process.env.BLOXITY_GAME_ID || '1-muscle-to-push-boulder',
+  gameSlug: process.env.BLOXITY_GAME_SLUG || process.env.BLOXITY_GAME_ID || 'sled-surfers',
   reportToken: process.env.BLOXITY_REPORT_TOKEN || '',
+}
+
+/**
+ * Whether Boxity confirms `rewardToken` as a rewarded ad watched to the end. Any
+ * failure counts as no: an unconfirmed ad never pays.
+ */
+export async function verifyAdReward(rewardToken) {
+  if (!rewardToken || typeof rewardToken !== 'string' || rewardToken.length > 4096) return false
+  try {
+    const res = await fetch(`${boxity.apiUrl}/v1/ads/reward/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ gameSlug: boxity.gameSlug, rewardToken }),
+      signal: AbortSignal.timeout(6000),
+    })
+    const body = await res.json().catch(() => null)
+    return res.ok && body?.valid === true
+  } catch (err) {
+    console.warn('[boxity] ad reward verify failed:', err?.message || err)
+    return false
+  }
 }
 
 /**
@@ -108,23 +129,23 @@ const SCORE_EVERY_MS = 20_000
 const SCORE_BATCH = 200
 
 /**
- * Scores waiting to go to Boxity, by player: the best Muscle and rebirths seen (boards
- * that keep each player's best) and the Wins earned since the last report (a board that
+ * Scores waiting to go to Boxity, by player: the longest ride and minutes played (boards
+ * that keep each player's best) and the Coins earned since the last report (a board that
  * adds them up). Kept until Boxity has them, so a failed request loses nothing.
  */
 const pending = new Map()
 
 /**
  * Notes a player's scores from state this server owns - never a client message: their
- * profile, and the Wins they've earned since the last call (`winsEarned`).
+ * profile, and the Coins they've earned since the last call (`coinsEarned`).
  */
-export function noteScores(playerId, profile, winsEarned = 0) {
+export function noteScores(playerId, profile, coinsEarned = 0) {
   if (isGuestId(playerId)) return
   const userId = legionId(playerId)
-  const row = pending.get(userId) ?? { muscle: 0, rebirths: 0, wins: 0 }
-  row.muscle = Math.max(row.muscle, Math.floor(profile.stats?.bestMuscle ?? profile.muscle ?? 0))
-  row.rebirths = Math.max(row.rebirths, Math.floor(profile.rebirths ?? 0))
-  row.wins += Math.max(0, Math.floor(winsEarned))
+  const row = pending.get(userId) ?? { distance: 0, playtime: 0, coins: 0 }
+  row.distance = Math.max(row.distance, Math.floor(profile.stats?.bestDistance ?? 0))
+  row.playtime = Math.max(row.playtime, Math.floor((profile.stats?.playtime ?? 0) / 60))
+  row.coins += Math.max(0, Math.floor(coinsEarned))
   pending.set(userId, row)
 }
 

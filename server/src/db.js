@@ -2,7 +2,6 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { SPHINX_STOCK_DEFAULT } from '../../shared/balance.js'
 import { normalizeProfile } from '../../shared/logic.js'
 
 /**
@@ -21,15 +20,16 @@ import { normalizeProfile } from '../../shared/logic.js'
  * the one they're playing in now.
  */
 
-const DB_PATH = process.env.DB_PATH || fileURLToPath(new URL('../data/boulder.db', import.meta.url))
+const DB_PATH = process.env.DB_PATH || fileURLToPath(new URL('../data/sled.db', import.meta.url))
 
-const BOARDS = { rebirths: 'rebirths', muscle: 'bestMuscle', height: 'bestMeter' }
+/** The plaza's boards: board id -> stored field. */
+const BOARDS = { playtime: 'playtime', distance: 'bestDistance', coins: 'coinsEarned' }
 
 const leaderboardFields = (profile) => ({
   name: profile.name,
-  rebirths: profile.rebirths,
-  bestMuscle: profile.stats.bestMuscle,
-  bestMeter: profile.stats.bestMeter,
+  playtime: Math.floor((profile.stats?.playtime ?? 0) / 60),
+  bestDistance: Math.floor(profile.stats?.bestDistance ?? 0),
+  coinsEarned: Math.floor(profile.stats?.coinsEarned ?? 0),
   updatedAt: profile.lastSeen,
 })
 
@@ -40,11 +40,7 @@ async function openMongo(uri) {
   // The database named in the URI: the one Legion scoped to this game.
   const db = client.db()
   const profiles = db.collection('profiles')
-  const kv = db.collection('kv')
-  await Promise.all([
-    ...Object.values(BOARDS).map((field) => profiles.createIndex({ [field]: -1 })),
-    kv.updateOne({ _id: 'sphinxStock' }, { $setOnInsert: { value: SPHINX_STOCK_DEFAULT } }, { upsert: true }),
-  ])
+  await Promise.all(Object.values(BOARDS).map((field) => profiles.createIndex({ [field]: -1 })))
 
   return {
     async load(id, owner) {
@@ -94,14 +90,6 @@ async function openMongo(uri) {
       }
       return null
     },
-    async stock() {
-      const doc = await kv.findOne({ _id: 'sphinxStock' })
-      return doc ? doc.value : SPHINX_STOCK_DEFAULT
-    },
-    async take() {
-      const doc = await kv.findOneAndUpdate({ _id: 'sphinxStock', value: { $gt: 0 } }, { $inc: { value: -1 } }, { returnDocument: 'after' })
-      return doc ? doc.value : null
-    },
     close: () => client.close(),
   }
 }
@@ -116,21 +104,28 @@ async function openSqlite(path) {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       data TEXT NOT NULL,
-      rebirths INTEGER NOT NULL DEFAULT 0,
-      best_muscle REAL NOT NULL DEFAULT 0,
-      best_meter REAL NOT NULL DEFAULT 0,
+      playtime INTEGER NOT NULL DEFAULT 0,
+      best_distance REAL NOT NULL DEFAULT 0,
+      coins_earned REAL NOT NULL DEFAULT 0,
       updated_at INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS profiles_rebirths ON profiles (rebirths DESC);
-    CREATE INDEX IF NOT EXISTS profiles_muscle ON profiles (best_muscle DESC);
-    CREATE INDEX IF NOT EXISTS profiles_meter ON profiles (best_meter DESC);
+    CREATE INDEX IF NOT EXISTS profiles_playtime ON profiles (playtime DESC);
+    CREATE INDEX IF NOT EXISTS profiles_distance ON profiles (best_distance DESC);
+    CREATE INDEX IF NOT EXISTS profiles_coins ON profiles (coins_earned DESC);
     CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `)
-  const columns = { rebirths: 'rebirths', muscle: 'best_muscle', height: 'best_meter' }
-  const readStock = () => {
-    const row = db.prepare("SELECT value FROM kv WHERE key = 'sphinxStock'").get()
-    return row ? Number(row.value) : SPHINX_STOCK_DEFAULT
-  }
+  const columns = { playtime: 'playtime', distance: 'best_distance', coins: 'coins_earned' }
+  const insert = (id, f, data) =>
+    db
+      .prepare(
+        `INSERT INTO profiles (id, name, data, playtime, best_distance, coins_earned, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name, data = excluded.data, playtime = excluded.playtime,
+           best_distance = excluded.best_distance, coins_earned = excluded.coins_earned,
+           updated_at = excluded.updated_at`,
+      )
+      .run(id, f.name ?? '', data, f.playtime ?? 0, f.bestDistance ?? 0, f.coinsEarned ?? 0, f.updatedAt ?? Date.now())
 
   // One process owns this file, so `owner` has nothing to guard against here.
   return {
@@ -138,15 +133,7 @@ async function openSqlite(path) {
       return db.prepare('SELECT data FROM profiles WHERE id = ?').get(id)?.data ?? null
     },
     async save(profile) {
-      const f = leaderboardFields(profile)
-      db.prepare(
-        `INSERT INTO profiles (id, name, data, rebirths, best_muscle, best_meter, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           name = excluded.name, data = excluded.data, rebirths = excluded.rebirths,
-           best_muscle = excluded.best_muscle, best_meter = excluded.best_meter,
-           updated_at = excluded.updated_at`,
-      ).run(profile.id, f.name, JSON.stringify(profile), f.rebirths, f.bestMuscle, f.bestMeter, f.updatedAt)
+      insert(profile.id, leaderboardFields(profile), JSON.stringify(profile))
       return true
     },
     async top(limit) {
@@ -165,37 +152,20 @@ async function openSqlite(path) {
         const row = db.prepare('SELECT data FROM profiles WHERE id = ?').get(guestId)
         if (!row || db.prepare('SELECT 1 FROM kv WHERE key = ?').get(`carried:${guestId}`)) continue
         db.prepare('INSERT INTO kv (key, value) VALUES (?, ?)').run(`carried:${guestId}`, userId)
-        const f = leaderboardFields(JSON.parse(row.data))
-        db.prepare(
-          `INSERT INTO profiles (id, name, data, rebirths, best_muscle, best_meter, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).run(userId, f.name ?? '', row.data, f.rebirths ?? 0, f.bestMuscle ?? 0, f.bestMeter ?? 0, f.updatedAt ?? Date.now())
+        insert(userId, leaderboardFields(JSON.parse(row.data)), row.data)
         return guestId
       }
       return null
-    },
-    async stock() {
-      return readStock()
-    },
-    async take() {
-      const stock = readStock()
-      if (stock <= 0) return null
-      db.prepare("INSERT INTO kv (key, value) VALUES ('sphinxStock', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
-        String(stock - 1),
-      )
-      return stock - 1
     },
     close: async () => db.close(),
   }
 }
 
 let store = null
-/** Sphinx stock as last known here; kept current from the database. */
-let stock = SPHINX_STOCK_DEFAULT
 
 /** Opens the database: MongoDB if MONGODB_URI is set, else the local SQLite file. */
 export async function openStorage({ mongoUri = process.env.MONGODB_URI, path = DB_PATH } = {}) {
   store = mongoUri ? await openMongo(mongoUri) : await openSqlite(path)
-  stock = await store.stock()
   console.log(`[db] using ${mongoUri ? 'MongoDB' : `SQLite at ${path}`}`)
 }
 
@@ -247,30 +217,6 @@ export async function adoptGuestProgress(userId, guestIds) {
   }
 }
 
-/** Top `limit` players per board: `{ rebirths: [{ name, value }], ... }`. */
+/** Top `limit` players per board: `{ playtime: [{ name, value }], distance, coins }`. */
 export const topPlayers = (limit = 10) => store.top(limit)
 
-export const getSphinxStock = () => stock
-
-/**
- * Takes one Sphinx. Synchronous for the purchase rules: decided on the stock known
- * here, then made permanent in the database, which has the final say (another pod may
- * have sold the last one a moment ago). Returns false when sold out.
- */
-export function takeSphinx() {
-  if (stock <= 0) return false
-  stock -= 1
-  store
-    .take()
-    .then((left) => {
-      stock = left ?? 0
-    })
-    .catch((err) => console.error('[db] sphinx stock update failed', err))
-  return true
-}
-
-/** Re-reads the stock, so sales on other pods show up here. */
-export async function refreshStock() {
-  stock = await store.stock()
-  return stock
-}

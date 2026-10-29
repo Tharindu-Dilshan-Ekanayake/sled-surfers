@@ -1,8 +1,10 @@
 import { useBloxityStore } from './bloxity/store'
 import { emoteClip, playEmote } from './game/emotes'
 import { runtime } from './game/runtime'
-import { push, resetCharacter } from './game/push/pushControl'
+import { resetCharacter, ride } from './game/ride/rideControl'
+import { sledPortrait } from './game/sleds/sledIcons'
 import { showChatBubble } from './game/speechBubbles'
+import { iconUrl } from './ui/icons'
 import { actions } from './net/actions'
 import { remotePlayers, upsertRemotePlayer } from './net/remotePlayers'
 import { useGame } from './store/game'
@@ -22,12 +24,14 @@ export function installDebugHooks() {
     actions,
     remotePlayers,
     upsertRemotePlayer,
-    push,
+    ride,
     bloxity: useBloxityStore,
     // What Boxity's own events would do: an emote picked, a chat line, "Reset Character".
     playEmote,
     emoteClip,
     showChatBubble,
     resetCharacter,
+    iconUrl,
+    sledPortrait,
   }
 }

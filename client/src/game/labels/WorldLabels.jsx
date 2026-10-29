@@ -5,8 +5,8 @@ import { Group } from 'three'
 import { getGame, useGame } from '../../store/game'
 import { useQuality } from '../../store/quality'
 import { LabelBatch } from './LabelBatch'
-import { lobbyLabels } from './lobbyLabels'
-import { getActiveLabelBatch, setActiveLabelBatch } from './registry'
+import { bannerLabelSpec, lobbyLabels } from './lobbyLabels'
+import { getActiveLabelBatch, setActiveLabelBatch, updateWorldLabel } from './registry'
 
 /**
  * All floating lobby text, batched (see LabelBatch). Builds asynchronously once the
@@ -24,8 +24,8 @@ export function WorldLabels() {
   useEffect(() => {
     if (!playable) return undefined
     const next = new LabelBatch({ pageSize: useQuality.getState().settings.maxTexture })
-    const { profile, sphinxStock } = getGame()
-    for (const label of lobbyLabels(profile, { sphinxStock })) next.add(label.id, label.position, label.spec, label)
+    const { profile } = getGame()
+    for (const label of lobbyLabels(profile)) next.add(label.id, label.position, label.spec, label)
     let cancelled = false
     // After the HUD's first paint: wait for an idle moment (or at most 1.5 s).
     const idle = new Promise((resolve) =>
@@ -56,6 +56,12 @@ export function WorldLabels() {
   useEffect(() => {
     batch?.setMaxDistance(maxDistance)
   }, [batch, maxDistance])
+
+  // The banner over the entrance follows your world.
+  const world = useGame((s) => s.profile.world)
+  useEffect(() => {
+    if (batch) updateWorldLabel('banner', bannerLabelSpec(world))
+  }, [batch, world])
 
   if (!batch) return null
   return batch.meshes.map((mesh) => <primitive key={mesh.uuid} object={mesh} />)

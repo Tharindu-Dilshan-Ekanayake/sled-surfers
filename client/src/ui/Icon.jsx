@@ -1,4 +1,6 @@
-import { iconUrl } from './icons'
+import { useSyncExternalStore } from 'react'
+
+import { iconUrl, onIconsChange } from './icons'
 
 /**
  * An icon from the game's SVG set (see icons.js), as an <img> so repeated icons share
@@ -7,7 +9,8 @@ import { iconUrl } from './icons'
  * @param {{ name: string, size?: string|number, className?: string, style?: object }} props
  */
 export function Icon({ name, size = '1em', className = '', style }) {
-  const src = iconUrl(name)
+  // Re-rendered when its 3D version arrives at start-up.
+  const src = useSyncExternalStore(onIconsChange, () => iconUrl(name))
   if (!src) return null
   return (
     <img

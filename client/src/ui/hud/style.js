@@ -12,8 +12,8 @@ export const GRADIENTS = {
   goldButton: 'linear-gradient(180deg, #fff27a 0%, #ffcb1f 48%, #ff9a0a 100%)',
   blueButton: 'linear-gradient(180deg, #8ff0ff 0%, #2fb8ff 50%, #1677ff 100%)',
   purpleButton: 'linear-gradient(180deg, #ff9cf4 0%, #dc52ff 50%, #9a2bff 100%)',
-  greenButton: 'linear-gradient(180deg, #b6ff6a 0%, #57e83a 50%, #19b52a 100%)',
-  greyButton: 'linear-gradient(180deg, #e2e6ea 0%, #a9b0b8 55%, #7d858e 100%)',
+  greenButton: 'linear-gradient(180deg, #8ef15e 0%, #4fd23a 48%, #22a52c 100%)',
+  greyButton: 'linear-gradient(180deg, #c9cfd8 0%, #9ba4b0 55%, #7b8592 100%)',
   redButton: 'linear-gradient(180deg, #ff8a7a 0%, #ff3b3b 50%, #d4142a 100%)',
   rainbow:
     'linear-gradient(90deg, #ff3b5c 0%, #ff9a1f 18%, #ffe53b 34%, #4ef05a 50%, #2fc6ff 66%, #6a5cff 82%, #ff4fd8 100%)',
@@ -21,6 +21,20 @@ export const GRADIENTS = {
   priceShort: 'linear-gradient(180deg, #ffc2b8 0%, #ff6a55 50%, #e2242c 100%)',
   slate: 'linear-gradient(180deg, #7c8cb0 0%, #4a5778 50%, #2c344d 100%)',
   rewardCard: 'linear-gradient(180deg, #ffe45c 0%, #ffbf1f 55%, #ff9a12 100%)',
+}
+
+/**
+ * Each button colour's outline and lip: a darker shade of it, as in the reference (the
+ * PLAY button's is deep green, the grey ones' slate...).
+ */
+export const EDGES = {
+  [GRADIENTS.goldButton]: '#8a4300',
+  [GRADIENTS.blueButton]: '#0b3a8a',
+  [GRADIENTS.purpleButton]: '#4a127a',
+  [GRADIENTS.greenButton]: '#0e5a1a',
+  [GRADIENTS.greyButton]: '#454c57',
+  [GRADIENTS.redButton]: '#6a0a12',
+  [GRADIENTS.slate]: '#14214a',
 }
 
 /** The chunky black border every HUD button has. */

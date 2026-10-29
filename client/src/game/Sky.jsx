@@ -87,13 +87,13 @@ function SkyDome() {
  * Baked rather than lit so the clouds stay bright white regardless of the scene lights,
  * and the flat per-face colour gives the low-poly look.
  */
-function createPuffGeometry() {
+function createPuffGeometry(tint) {
   const geometry = new IcosahedronGeometry(1, 1)
   const position = geometry.getAttribute('position')
   const colors = new Float32Array(position.count * 3)
 
-  const top = new Color(CLOUDS.top)
-  const bottom = new Color(CLOUDS.bottom)
+  const top = new Color(tint.top)
+  const bottom = new Color(tint.bottom)
   const sun = new Vector3(...LIGHTS.sunDirection).normalize()
   const a = new Vector3()
   const b = new Vector3()
@@ -171,7 +171,7 @@ function buildCloudLayout(count) {
  * Every puff of every cloud in one InstancedMesh: a single draw call for the whole
  * sky, where one mesh per puff cost ~100.
  */
-function Clouds() {
+function Clouds({ colors }) {
   const count = useQuality((s) => s.settings.cloudCount)
 
   const mesh = useMemo(() => {
@@ -193,7 +193,7 @@ function Clouds() {
 
     // fog off: the clouds sit past the fog's far distance and would vanish.
     const instanced = new InstancedMesh(
-      createPuffGeometry(),
+      createPuffGeometry(colors),
       new MeshBasicMaterial({ vertexColors: true, fog: false }),
       puffs.length,
     )
@@ -203,7 +203,7 @@ function Clouds() {
     instanced.computeBoundingSphere()
     instanced.position.set(...CLOUD_CENTER)
     return instanced
-  }, [count])
+  }, [count, colors])
 
   useEffect(
     () => () => {
@@ -222,12 +222,15 @@ function Clouds() {
   return <primitive ref={ref} object={mesh} />
 }
 
-/** Gradient sky plus drifting low-poly clouds. */
-export function Sky() {
+/**
+ * Gradient sky plus drifting low-poly clouds, in the world's colours (the clouds'
+ * dome's own come from skyUniforms, which worldLook.js retints in place).
+ */
+export function Sky({ clouds = CLOUDS }) {
   return (
     <>
       <SkyDome />
-      <Clouds />
+      <Clouds colors={clouds} />
     </>
   )
 }

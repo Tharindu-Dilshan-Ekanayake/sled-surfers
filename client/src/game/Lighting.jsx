@@ -13,15 +13,15 @@ const SUN_DISTANCE = 70
 const SHADOW_EXTENT = 28
 
 /**
- * Bright, even daylight: a white hemisphere fill and a warm sun.
+ * Bright, even daylight: a hemisphere fill and a warm sun, tinted by the world (`lights`).
  *
  * Only the HIGH preset casts realtime shadows; lower presets use blob shadows instead
  * (see BlobShadows), so the shadow pass costs nothing there.
  *
  * A directional light's shadow only covers a fixed box around its target, so the sun
- * and its target follow the player, up the mountain too while pushing.
+ * and its target follow the player, down the slide too while riding.
  */
-export function Lighting() {
+export function Lighting({ lights = LIGHTS }) {
   const sunRef = useRef(null)
   const scene = useThree((s) => s.scene)
   const shadows = useQuality((s) => s.settings.shadows === 'realtime')
@@ -58,11 +58,11 @@ export function Lighting() {
 
   return (
     <>
-      <hemisphereLight args={[LIGHTS.hemiSky, LIGHTS.hemiGround, LIGHTS.hemiIntensity]} />
+      <hemisphereLight color={lights.hemiSky} groundColor={lights.hemiGround} intensity={LIGHTS.hemiIntensity} />
       <directionalLight
         ref={sunRef}
         castShadow={shadows}
-        color={LIGHTS.sunColor}
+        color={lights.sunColor}
         intensity={LIGHTS.sunIntensity}
         position={SUN_DIRECTION.clone().multiplyScalar(SUN_DISTANCE).toArray()}
         shadow-mapSize={[mapSize, mapSize]}
