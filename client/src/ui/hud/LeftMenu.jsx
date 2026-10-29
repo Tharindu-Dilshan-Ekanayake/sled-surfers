@@ -5,7 +5,10 @@ import Icon from '../Icon'
 import StrokeText from '../StrokeText'
 import useNow from '../useNow'
 import { AlertBadge } from './parts'
-import { u } from './style'
+import { fitFont, u } from './style'
+
+/** One size for every tile's name, the longest (WORLDS, TRAILS) just fitting across it. */
+const TILE_FONT = fitFont('WORLDS', 31, 106)
 
 /** A square menu tile: a big icon with its name across the bottom. */
 function Tile({ icon, label, onClick, alert = 0 }) {
@@ -25,7 +28,7 @@ function Tile({ icon, label, onClick, alert = 0 }) {
       }}
     >
       <Icon name={icon} size={u(104)} className="pp-icon-drop" style={{ position: 'absolute', top: u(-12) }} />
-      <span style={{ fontSize: u(31), position: 'relative' }}>
+      <span style={{ fontSize: u(TILE_FONT), position: 'relative', whiteSpace: 'nowrap' }}>
         <StrokeText stroke={u(7)}>{label}</StrokeText>
       </span>
       {alert > 0 && (

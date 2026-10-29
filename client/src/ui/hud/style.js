@@ -42,3 +42,9 @@ export const chunkyBorder = (width = 4) => ({
   border: `${u(width)} solid #111`,
   boxShadow: `0 ${u(4)} 0 rgba(0,0,0,0.45), inset 0 ${u(3)} 0 rgba(255,255,255,0.45)`,
 })
+
+/**
+ * A label's font size (reference px): `size`, or smaller so `text` still fits `width` -
+ * for names (WORLDS, SLINGSHOT) that would otherwise spill over their button or card.
+ */
+export const fitFont = (text, size, width, em = 0.72) => Math.min(size, Math.floor(width / (String(text).length * em)))

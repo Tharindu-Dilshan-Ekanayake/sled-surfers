@@ -13,6 +13,7 @@ import BlobShadows from './BlobShadows'
 import ChatBubbles from './ChatBubbles'
 import FollowCamera from './FollowCamera'
 import Particles from './fx/Particles'
+import { updatePopups } from './fx/popups'
 import SpeedFX from './fx/SpeedFX'
 import SpeedLines from './fx/SpeedLines'
 import WorldLabels from './labels/WorldLabels'
@@ -116,6 +117,12 @@ function SledIcons() {
     renderIcons3d(gl, requestAnimationFrame)
   }, [gl])
   useFrame(() => processIconQueue(2))
+  return null
+}
+
+/** Moves the floating words (BOOST!, SMASH!, NEW BEST!, the coins on returning) - DOM styles only. */
+function PopupDriver() {
+  useFrame(({ camera, size }) => updatePopups(camera, size.width, size.height))
   return null
 }
 
@@ -290,6 +297,7 @@ export function GameScene({ onReady }) {
         <PauseForAds />
         <BlobShadows />
         <SledIcons />
+        <PopupDriver />
 
         <FollowCamera />
         <StartUp onSceneIn={handleSceneIn} />
