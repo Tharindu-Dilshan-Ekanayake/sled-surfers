@@ -416,7 +416,7 @@ canvas {
   }
 }
 .pp-banner {
-  animation: pp-banner 2.6s ease-out forwards;
+  animation: pp-banner 1.5s ease-out forwards;
 }
 
 /* A small notice under the ride's distance (the stage you've entered): slides down, holds, fades. */

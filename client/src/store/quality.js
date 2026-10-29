@@ -90,13 +90,11 @@ function isMobileDevice() {
 }
 
 /**
- * The starting preset: LOW on phones, tablets and PCs with 4 cores or fewer; MEDIUM on
- * everything else. Anyone can pick another in Settings (remembered), and the monitor
- * drops a level, never raises one, if the frame rate falls under budget. The map is the
- * same on all of them.
+ * The starting preset: LOW for everyone, so the game runs smoothly on any device from
+ * the first ride. Anyone can pick MEDIUM or HIGH in Settings (remembered). The map is
+ * the same on all of them.
  */
-const weakDevice = () => isMobileDevice() || (typeof navigator !== 'undefined' && (navigator.hardwareConcurrency || 4) <= 4)
-export const DEFAULT_QUALITY = weakDevice() ? 'LOW' : 'MEDIUM'
+export const DEFAULT_QUALITY = 'LOW'
 
 function readSaved() {
   try {

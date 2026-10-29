@@ -16,7 +16,6 @@ import Icon from '../Icon'
 import StrokeText from '../StrokeText'
 import { u } from './style'
 
-const BANNER_MS = 1100
 /** The speedometer's dial runs to this. */
 const DIAL_MPH = 180
 
@@ -45,10 +44,7 @@ function snapshot() {
     spare: sim ? sim.cans : 0,
     fuel: sim ? sim.fuel : 0,
     burning: Boolean(sim?.burning),
-    boost: now - ride.boostAt < BANNER_MS ? ride.boostAt : 0,
-    smash: now - ride.smashAt < BANNER_MS ? ride.smashAt : 0,
     finish: now - ride.finishAt < 2600 ? ride.finishAt : 0,
-    best: now - ride.bestAt < 2200 ? ride.bestAt : 0,
     riders,
   }
 }
@@ -184,13 +180,15 @@ function Progress({ s, riders }) {
   )
 }
 
-/** A big word across the middle: BOOST!, SMASH!, FINISH!. */
-// High on the screen, above the horizon: the slide ahead stays clear to see.
-function Banner({ id, text, gradient, top = '36%', size = 72 }) {
+/**
+ * BOOST!, SMASH!, NEW BEST!, FINISH!: small, floating up from just above your sled's
+ * head, so the track ahead and the walls on it stay clear to see.
+ */
+function Banner({ id, text, gradient, top = '47%', size = 34 }) {
   if (!id) return null
   return (
     <div key={id} className="pp-banner pointer-events-none absolute left-1/2" style={{ top, fontSize: u(size) }}>
-      <StrokeText stroke={u(16)} gradient={gradient}>
+      <StrokeText stroke={u(8)} gradient={gradient}>
         {text}
       </StrokeText>
     </div>
@@ -284,8 +282,6 @@ export function RideHud() {
       <Rocket mph={snap.mph} spare={snap.spare} fuel={snap.fuel} burning={snap.burning} />
       <Progress s={snap.s} riders={snap.riders} />
       {!touchDevice() && <KeyHints />}
-      <Banner id={snap.boost} text="BOOST!" gradient="linear-gradient(180deg, #e0faff 0%, #7fe2ff 45%, #2fa8ff 100%)" />
-      <Banner id={snap.smash} text="SMASH!" gradient="linear-gradient(180deg, #ffb0a8 0%, #ff4a3b 50%, #d4142a 100%)" top="36%" />
       {firstRides && snap.s < 90 && (
         <div className="pp-card-in pointer-events-none absolute left-1/2 flex items-center" style={{ bottom: u(120), transform: 'translateX(-50%)', gap: u(12), padding: `${u(10)} ${u(26)}`, background: 'rgba(20, 33, 74, 0.82)', border: `${u(4)} solid #fff`, borderRadius: u(24), fontSize: u(34), whiteSpace: 'nowrap' }}>
           <Icon name="boost" size={u(44)} />
@@ -299,8 +295,7 @@ export function RideHud() {
           <StrokeText stroke={u(6)}>Slowing down? Fire your ROCKET!</StrokeText>
         </div>
       )}
-      <Banner id={snap.best} text="NEW BEST!" gradient="linear-gradient(180deg, #fffaa8 0%, #ffd52a 45%, #ff9c00 100%)" top="40%" size={66} />
-      <Banner id={snap.finish} text="FINISH!" gradient="linear-gradient(180deg, #fffaa8 0%, #ffd52a 45%, #ff9c00 100%)" top="30%" size={96} />
+      <Banner id={snap.finish} text="FINISH!" gradient="linear-gradient(180deg, #fffaa8 0%, #ffd52a 45%, #ff9c00 100%)" top="21%" size={64} />
     </>
   )
 }

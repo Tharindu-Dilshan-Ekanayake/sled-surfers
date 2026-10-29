@@ -254,6 +254,7 @@ export function advanceRide(delta, input) {
   // Past your best: a cheer, once a ride (not on the first few, before there is a best).
   if (ride.phase === 'ride' && !ride.race && !ride.bestAt && ride.best >= 30 && sim.s > ride.best) {
     ride.bestAt = performance.now()
+    headWord('NEW BEST!', 4.4, GOLD_WORD, 1.25)
     burst({ x: ride.position.x, y: ride.position.y + 2, z: ride.position.z, count: 40, palette: 'gold', speed: 9 })
     sfx.newBest()
   }
@@ -266,6 +267,16 @@ export function advanceRide(delta, input) {
 
 const _at = new Vector3()
 
+const BOOST_WORD = 'linear-gradient(180deg, #e0faff 0%, #7fe2ff 45%, #2fa8ff 100%)'
+const SMASH_WORD = 'linear-gradient(180deg, #ffb0a8 0%, #ff4a3b 50%, #d4142a 100%)'
+const GOLD_WORD = 'linear-gradient(180deg, #fffaa8 0%, #ffd52a 45%, #ff9c00 100%)'
+
+/** A word rising from just above your sled's head, and moving with it (BOOST!, SMASH!, NEW BEST!). */
+function headWord(text, height, gradient, scale = 1) {
+  const p = ride.position
+  spawnPopup(text, _at.set(p.x, p.y + height, p.z), { follow: p, gradient, scale })
+}
+
 /** One thing that happened on the slide, from the simulation. */
 function onEvent([type, index]) {
   const now = performance.now()
@@ -273,9 +284,7 @@ function onEvent([type, index]) {
     case 'coin': {
       ride.coins += 1
       actions.collectCoin(index, round2(ride.sim.s))
-      const coin = ride.sim.course.coins[index]
-      slidePoint(coin.s, coin.x, coin.h, _at)
-      spawnPopup(`+${WORLDS[WORLD].coin}`, _at, { iconUrl: COIN(), follow: ride.position, gradient: COIN_GRADIENT })
+      // The HUD's running total and the sound say it: no popup, so the view stays clear.
       sfx.coin()
       break
     }
@@ -287,11 +296,13 @@ function onEvent([type, index]) {
     }
     case 'boost':
       ride.boostAt = now
+      headWord('BOOST!', 2.6, BOOST_WORD)
       actions.rideHit('boost', index, round2(ride.sim.s))
       sfx.boost()
       break
     case 'smash': {
       ride.smashAt = now
+      headWord('SMASH!', 3.5, SMASH_WORD)
       ride.smashed.set(index, now)
       actions.rideHit('wall', index, round2(ride.sim.s))
       sfx.smash()
