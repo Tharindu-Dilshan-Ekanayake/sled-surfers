@@ -2,7 +2,7 @@ import { formatNumber } from '@shared/format'
 
 import Icon from '../Icon'
 import StrokeText from '../StrokeText'
-import { GRADIENTS, u } from './style'
+import { EDGES, GRADIENTS, u } from './style'
 
 /** Red circular "!" attention badge. */
 export function AlertBadge({ size = 44, style }) {
@@ -40,7 +40,8 @@ export function Price({ amount, size = 34, afford = true, className = '', style 
  * The game's standard chunky button: gradient face with a glossy top, black outline,
  * and a dark lip it presses down into (see .pp-chunky). Children are laid out centred.
  */
-export function ChunkyButton({ onClick, gradient = GRADIENTS.goldButton, className = '', style, children, disabled, title, radius = 14, border = 4 }) {
+export function ChunkyButton({ onClick, gradient = GRADIENTS.goldButton, edge, className = '', style, children, disabled, title, radius = 14, border = 4 }) {
+  const outline = edge ?? EDGES[gradient] ?? '#14214a'
   return (
     <button
       type="button"
@@ -52,7 +53,8 @@ export function ChunkyButton({ onClick, gradient = GRADIENTS.goldButton, classNa
       style={{
         background: gradient,
         borderRadius: u(radius),
-        border: `${u(border)} solid #111`,
+        border: `${u(border)} solid ${outline}`,
+        '--edge': outline,
         ...style,
       }}
     >

@@ -11,8 +11,6 @@
  * `lift` raises (or, to keep bent legs on the ground, lowers) the body, in metres.
  */
 
-import { LEVEL_FIRST, LEVEL_GROWTH } from '@shared/balance'
-
 export const POSED_BONES = [
   'Spine1',
   'Neck1',
@@ -26,31 +24,11 @@ export const POSED_BONES = [
   'LegR2',
 ]
 
-/** The level at which a body is fully built: a bodybuilder. */
-const FULL_BUILD_LEVEL = 25
-
 /**
- * How built someone is for their Muscle (their power), 0 (as skinny as can be: level
- * 1) to 1 (a bodybuilder, at FULL_BUILD_LEVEL): an even step for every level their
- * Muscle is worth, so a level 5 and a level 17 look nothing alike - and fractions of a
- * level too, so it grows a little with every click. The level isn't capped, so Muscle
- * past the rebirth cap keeps building you; a rebirth, which takes your Muscle back to
- * 0, makes you skinny again.
+ * How built every body is, 0 (skinny) to 1 (a bodybuilder): the same healthy middle for
+ * everyone - in Sled Surfers nobody trains, so nobody bulks up.
  */
-export function bulkFor(muscle = 0) {
-  // muscleForLevel turned round: Muscle m is worth level 1 + log(1 + m(G-1)/F) / log G.
-  const level = 1 + Math.log(1 + (Math.max(0, muscle) * (LEVEL_GROWTH - 1)) / LEVEL_FIRST) / Math.log(LEVEL_GROWTH)
-  return Math.min(1, (level - 1) / (FULL_BUILD_LEVEL - 1))
-}
-
-/** How fast a body grows into (or out of) its build, per second: it eases, never jumps. */
-const GROW_RATE = 3
-
-/** Eases `motion.bulk` towards `target`; a body with no build yet (-1) takes it at once. */
-export function growBody(motion, target, delta) {
-  if (!(motion.bulk >= 0)) motion.bulk = target
-  else motion.bulk += (target - motion.bulk) * (1 - Math.exp(-GROW_RATE * delta))
-}
+export const BODY_BULK = 0.38
 
 /**
  * How a blocky stand-in's parts are built against its own, skinny (bulk 0) and
@@ -181,92 +159,32 @@ function airborne(vy) {
   add('Spine1', lerp(-0.15, 0.06, f), 0, 0, 1)
 }
 
-/**
- * Pushing a boulder: both arms up and forward with the palms on the rock, leaning into
- * it, legs driving (striding with the speed). `effort` (0-1) is how hard you're
- * pushing; `strain` (0-1) is how close a boulder that's too heavy is to crushing you -
- * the stance digs in and the whole body trembles.
- */
-function pushing(time, phase, speed, maxSpeed, effort, strain) {
-  const ratio = clamp01(Math.abs(speed) / Math.max(maxSpeed, 0.001))
-  const shake = Math.sin(time * 41) * 0.06 * strain
-  const lean = 0.18 + 0.32 * effort + 0.15 * strain
-  add('Spine1', -lean + shake, 0, 0, 1)
-  add('Neck1', 0.3 + 0.1 * strain, 0, 0, 1)
-  for (const [name, out] of [
-    ['ArmL1', OUT_L],
-    ['ArmR1', OUT_R],
-  ]) {
-    add(name, -2.0 - 0.15 * effort + shake, -0.12 * out, 0, 1)
-  }
-  add('ArmL2', -0.45 + 0.2 * effort, 0, 0, 1)
-  add('ArmR2', -0.45 + 0.2 * effort, 0, 0, 1)
-  // Legs: a short driving stride while moving, a dug-in lunge while straining.
-  const cycle = Math.sin(phase)
-  const leg = 0.7 * ratio * (1 - strain)
-  add('LegL1', cycle * leg - 0.5 * strain, 0.06 * OUT_L, 0, 1)
-  add('LegR1', -cycle * leg + 0.55 * strain, 0.06 * OUT_R, 0, 1)
-  add('LegL2', Math.max(0, -cycle) * 1.0 * ratio + 0.8 * strain, 0, 0, 1)
-  add('LegR2', Math.max(0, cycle) * 1.0 * ratio + 0.15 * strain, 0, 0, 1)
-  pose.lift += (Math.abs(Math.cos(phase)) * 0.04 - 0.02) * ratio - 0.12 * strain
-}
 
-/**
- * A dumbbell curl with the right hand, `t` 0-1 through it: the forearm swings the
- * weight up to the shoulder and back down, the body bracing a little.
- */
-function curling(t, w = 1) {
-  const up = Math.sin(clamp01(t) * Math.PI)
-  add('ArmR1', -0.25 * up, 0.05 * OUT_R, 0, w)
-  add('ArmR2', -2.1 * up, 0, 0, w)
-  add('Spine1', 0.06 * up, 0, 0, w)
-  pose.lift -= 0.02 * up * w
-}
 
 /** How far sitting lowers the body: from standing hips down to just over a bench seat. */
 const SIT_DROP = 0.26
 
+
 /**
- * Sat on a bench: thighs out level in front, shins straight down to the floor, sitting
- * up, the left hand resting on its knee (the right one curls).
+ * Sat on a sled: legs out in front, knees a little up, hands gripping the sides, leaning
+ * into the turns (`lean` -1..1) and back against the band while it's pulled
+ * (`pull` 0-1). In the air the arms fly up and out.
  */
-function seated(time) {
-  const breath = Math.sin(time * 1.8)
-  add('LegL1', -1.5, 0.14 * OUT_L, 0, 1)
-  add('LegR1', -1.5, 0.14 * OUT_R, 0, 1)
-  add('LegL2', 1.5, 0, 0, 1)
-  add('LegR2', 1.5, 0, 0, 1)
-  add('Spine1', 0.04 + breath * 0.015, 0, 0, 1)
-  add('ArmL1', -0.45, 0.12 * OUT_L, 0, 1)
-  add('ArmL2', -0.7, 0, 0, 1)
-  add('ArmR1', -0.1, 0.12 * OUT_R, 0, 1)
-  add('ArmR2', -0.3, 0, 0, 1)
-  pose.lift -= SIT_DROP
+function sledding(time, lean, pull, air) {
+  const shiver = Math.sin(time * 37) * 0.02
+  add('LegL1', -1.35, 0.22 * OUT_L, 0, 1)
+  add('LegR1', -1.35, 0.22 * OUT_R, 0, 1)
+  add('LegL2', 0.55, 0, 0, 1)
+  add('LegR2', 0.55, 0, 0, 1)
+  add('Spine1', 0.12 + 0.35 * pull + shiver, lean * 0.22, -lean * 0.25, 1)
+  add('Neck1', -0.1 - 0.25 * pull, -lean * 0.1, 0, 1)
+  add('ArmL1', lerp(-0.35, -2.2, air), lerp(0.5, 1.2, air) * OUT_L, 0, 1)
+  add('ArmR1', lerp(-0.35, -2.2, air), lerp(0.5, 1.2, air) * OUT_R, 0, 1)
+  add('ArmL2', -0.5, 0, 0, 1)
+  add('ArmR2', -0.5, 0, 0, 1)
+  pose.lift -= SIT_DROP + 0.18
 }
 
-/** Flattened by a boulder: arms and legs splayed out like a starfish. */
-function splat(w) {
-  add('ArmL1', -0.2, 1.3 * OUT_L, 0, w)
-  add('ArmR1', -0.2, 1.3 * OUT_R, 0, w)
-  add('LegL1', 0, 0.5 * OUT_L, 0, w)
-  add('LegR1', 0, 0.5 * OUT_R, 0, w)
-}
-
-/** Arms up and waving, bouncing on the spot: the celebration at the top. */
-function cheering(time, w) {
-  const wave = Math.sin(time * 10) * 0.28
-  add('ArmL1', -2.7 + wave, 0.38 * OUT_L, 0, w)
-  add('ArmR1', -2.7 - wave, 0.38 * OUT_R, 0, w)
-  add('ArmL2', -0.25, 0, 0, w)
-  add('ArmR2', -0.25, 0, 0, w)
-  add('LegL1', -0.12, 0.06 * OUT_L, 0, w)
-  add('LegR1', -0.12, 0.06 * OUT_R, 0, w)
-  add('LegL2', 0.22, 0, 0, w)
-  add('LegR2', 0.22, 0, 0, w)
-  add('Spine1', 0.1, 0, 0, w)
-  add('Neck1', -0.15, 0, 0, w)
-  pose.lift += Math.abs(Math.sin(time * 7)) * 0.16 * w
-}
 
 /** The win dance: fists punching the air in turn, hips swinging, bouncing to the beat. */
 function dancing(time, w) {
@@ -286,19 +204,13 @@ function dancing(time, w) {
   pose.lift += Math.abs(a) * 0.14 * w
 }
 
-/** Seconds per automatic curl in a Train Zone (TRAIN_INTERVAL in balance.js). */
-const TRAIN_PERIOD = 0.8
-
 /**
  * @param {{ time?: number, speed?: number, maxSpeed?: number, grounded?: boolean,
- *   vy?: number, stride?: number, pushing?: boolean, effort?: number, strain?: number,
- *   crushed?: number, cheer?: number, curl?: number, training?: boolean,
- *   sitting?: boolean, dance?: number }} motion
- *   `pushing` puts the hands on a boulder; `speed` is then the push's speed, `effort`
- *   (0-1) how hard, `strain` (0-1) how close to being crushed, `crushed` (0-1) how
- *   flattened, and `cheer` (0-1) the celebration at the top. Otherwise `curl` (0-1) is a
- *   lift in progress (0 = none), `sitting` sits you on a bench and `training` curls on a
- *   loop, on a Train Zone's bench, and `dance` (0-1) is the win dance.
+ *   vy?: number, stride?: number, riding?: boolean, lean?: number, pull?: number,
+ *   air?: number, cheer?: number, dance?: number }} motion
+ *   `riding` sits you on your sled: `lean` (-1..1) into the turns, `pull` (0-1) back
+ *   against the slingshot's band, `air` (0-1) in the air, `cheer` (0-1) arms up at the
+ *   end. Otherwise you stand, walk or jump, and `dance` (0-1) is the win dance.
  */
 export function computePose(motion) {
   const {
@@ -308,14 +220,11 @@ export function computePose(motion) {
     grounded = true,
     vy = 0,
     stride: phase = time * 5,
-    pushing: onBoulder = false,
-    effort = 0,
-    strain = 0,
-    crushed = 0,
+    riding = false,
+    lean = 0,
+    pull = 0,
+    air = 0,
     cheer = 0,
-    curl = 0,
-    training = false,
-    sitting = false,
     dance = 0,
   } = motion
   for (const name of POSED_BONES) {
@@ -326,17 +235,16 @@ export function computePose(motion) {
   }
   pose.lift = 0
 
-  if (onBoulder) {
-    if (crushed > 0) splat(crushed)
-    else if (cheer > 0) {
-      stance(1 - cheer, time)
-      cheering(time, cheer)
-    } else pushing(time, phase, speed, maxSpeed, effort, strain)
+  if (riding) {
+    sledding(time, lean, pull, air)
+    if (cheer > 0) {
+      add('ArmL1', -2.1 * cheer, 0, 0, 1)
+      add('ArmR1', -2.1 * cheer, 0, 0, 1)
+      add('ArmL1', Math.sin(time * 10) * 0.25 * cheer, 0, 0, 1)
+    }
     return pose
   }
-  if (sitting) {
-    seated(time)
-  } else if (grounded) {
+  if (grounded) {
     const ratio = clamp01(speed / Math.max(maxSpeed, 0.001))
     const still = (1 - smooth(0.05, 0.4, ratio)) * (1 - dance)
     stance(still, time)
@@ -346,7 +254,5 @@ export function computePose(motion) {
   } else {
     airborne(vy)
   }
-  if (training) curling((time / TRAIN_PERIOD) % 1, 1)
-  else if (curl > 0) curling(curl, 1)
   return pose
 }

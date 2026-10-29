@@ -9,7 +9,7 @@ import { createMusic } from './music'
  * silently skipped.
  */
 
-const MUTE_KEY = 'mb.muted'
+const MUTE_KEY = 'sled.muted'
 
 let ctx = null
 let master = null
@@ -55,6 +55,9 @@ function unlock() {
   music = createMusic(ctx, master, noiseBuffer)
   music.setVolume(musicVolume)
   music.start()
+  // The slide's rumble, made now (just after the tap) rather than at the launch, where
+  // it would cost a frame.
+  setTimeout(slideBuffers, 0)
 }
 
 /**
@@ -128,15 +131,14 @@ export function onMutedChange(listener) {
   return () => muteListeners.delete(listener)
 }
 
-// --- The roll: the sound of the boulder going up the hill ------------------------------
+// --- The slide: snow hissing under the sled, wind, and the rocket ----------------------
 
-let roll = null
-let rollSetAt = 0
-/** Deep brown noise (like far-off thunder) and gravel crackle, made the first time a boulder rolls. */
+let slide = null
+let slideSetAt = 0
+/** Brown noise (a low rumble), made once sound is unlocked (or the first time a sled slides). */
 let brownBuffer = null
-let gravelBuffer = null
 
-function rollBuffers() {
+function slideBuffers() {
   if (brownBuffer) return
   const n = ctx.sampleRate * 2
   brownBuffer = ctx.createBuffer(1, n, ctx.sampleRate)
@@ -149,18 +151,10 @@ function rollBuffers() {
   // Tilted so it ends where it starts: no click each time round the loop.
   const drift = brown[n - 1] - brown[0]
   for (let i = 0; i < n; i += 1) brown[i] -= (drift * i) / (n - 1)
-  // Gravel: silence scattered with tiny clicks of every size, some 600 a second.
-  gravelBuffer = ctx.createBuffer(1, n, ctx.sampleRate)
-  const gravel = gravelBuffer.getChannelData(0)
-  for (let i = 0; i < n - 24; i += 1) {
-    if (Math.random() >= 600 / ctx.sampleRate) continue
-    const a = Math.random() ** 2 * (Math.random() < 0.5 ? -1 : 1)
-    for (let k = 0; k < 24; k += 1) gravel[i + k] += a * Math.exp(-k / 5) * (k % 2 ? -1 : 1)
-  }
 }
 
 /** A looping buffer through a filter and a gain (starting silent) into the mix. */
-function rollLayer(buffer, type, frequency, q) {
+function loopLayer(buffer, type, frequency, q) {
   const src = ctx.createBufferSource()
   src.buffer = buffer
   src.loop = true
@@ -171,115 +165,94 @@ function rollLayer(buffer, type, frequency, q) {
   const gain = ctx.createGain()
   gain.gain.value = 0.0001
   src.connect(filter).connect(gain).connect(master)
-  src.start()
+  src.start(0, Math.random())
   return { src, filter, gain }
 }
 
 /**
- * The heavy rock rolling, in three layers: a deep rumble of its weight on the ground; a
- * thud each time one of its lumps comes round and hits the ground (see rollThuds); and
- * gravel crunching under it, crackling faster the faster it goes. And a low growl that
- * swells while you strain against one too heavy. The music ducks under it until
- * `rollStop`.
+ * The ride, in layers: snow hissing under the runners, the bright scrape of ice on top
+ * of it (both brighter and louder the faster you go), a low rumble, and the wind -
+ * rushing harder with speed, and taking over in the air. And the rocket's roar while it
+ * burns. The music ducks under it until `slideStop`.
  */
-function rollStart() {
-  if (!ctx || roll || ctx.state !== 'running') return
-  rollBuffers()
-  const rumble = rollLayer(brownBuffer, 'lowpass', 120, 0.9)
-  const gravel = rollLayer(gravelBuffer, 'bandpass', 2400, 0.7)
-  // The growl: a low buzz through a lowpass, for straining.
-  const growl = ctx.createOscillator()
-  growl.type = 'sawtooth'
-  growl.frequency.value = 70
-  const growlFilter = ctx.createBiquadFilter()
-  growlFilter.type = 'lowpass'
-  growlFilter.frequency.value = 260
-  const growlGain = ctx.createGain()
-  growlGain.gain.value = 0.0001
-  growl.connect(growlFilter).connect(growlGain).connect(master)
-  growl.start()
-  roll = { rumble, gravel, growl, growlGain, nextThud: ctx.currentTime }
+function slideStart() {
+  if (!ctx || slide || ctx.state !== 'running') return
+  slideBuffers()
+  slide = {
+    hiss: loopLayer(noiseBuffer, 'bandpass', 3200, 0.6),
+    ice: loopLayer(noiseBuffer, 'highpass', 6500, 0.7),
+    rumble: loopLayer(brownBuffer, 'lowpass', 140, 0.8),
+    wind: loopLayer(noiseBuffer, 'bandpass', 700, 1.4),
+    rocket: loopLayer(brownBuffer, 'lowpass', 420, 1.2),
+    burning: false,
+  }
   music?.duck(true)
 }
 
-/** One lump of the rock hitting the ground at `t`: a low knock that drops in pitch, and a puff of grit. */
-function thud(t, volume, pitch) {
-  const osc = ctx.createOscillator()
-  const gain = ctx.createGain()
-  osc.frequency.setValueAtTime(pitch * 1.5, t)
-  osc.frequency.exponentialRampToValueAtTime(pitch, t + 0.06)
-  gain.gain.setValueAtTime(0.0001, t)
-  gain.gain.exponentialRampToValueAtTime(volume, t + 0.006)
-  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22)
-  osc.connect(gain).connect(master)
-  osc.start(t)
-  osc.stop(t + 0.25)
-  const grit = ctx.createBufferSource()
-  grit.buffer = brownBuffer
-  const filter = ctx.createBiquadFilter()
-  filter.type = 'lowpass'
-  filter.frequency.value = 520
-  const gritGain = ctx.createGain()
-  gritGain.gain.setValueAtTime(volume * 0.9, t)
-  gritGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12)
-  grit.connect(filter).connect(gritGain).connect(master)
-  grit.start(t, Math.random() * 1.5, 0.14)
-}
-
 /**
- * Schedules the thuds a little ahead: one per lump that comes round, so as many a second
- * as the rock turns times its lumps - quicker the faster it rolls, slower and deeper the
- * bigger it is - each a little uneven, as a real rock is.
+ * `level` 0..1 from how fast you're going, whether you're in the air, and whether the
+ * rocket's burning. Positional, not an object: it's called every frame.
  */
-function rollThuds(level, size) {
-  const t = ctx.currentTime
-  if (level < 0.05) {
-    roll.nextThud = t + 0.08
-    return
-  }
-  const rate = (0.9 + level * 3.6) * (1.6 / size)
-  const pitch = 64 * Math.sqrt(1.5 / size)
-  roll.nextThud = Math.max(roll.nextThud, t + 0.02)
-  while (roll.nextThud < t + 0.25) {
-    thud(roll.nextThud, (0.07 + level * 0.16) * (0.6 + Math.random() * 0.6), pitch * (0.9 + Math.random() * 0.2))
-    roll.nextThud += (0.75 + Math.random() * 0.5) / rate
-  }
-}
-
-/**
- * `level` 0..1 from how fast the boulder rolls (either way); `strain` 0..1 how close to
- * being crushed; `size` the boulder's radius. Positional, not an object: it's called
- * every frame.
- */
-function rollSet(level, strain = 0, size = 1.5) {
-  if (!roll) return
+function slideSet(level, airborne = false, burning = false) {
+  if (!slide) return
   // Ten updates a second is plenty for a smooth swell.
   const now = performance.now()
-  if (now - rollSetAt < 100) return
-  rollSetAt = now
+  if (now - slideSetAt < 100) return
+  slideSetAt = now
   const t = ctx.currentTime
   const l = Math.min(1, Math.max(0, level))
-  roll.rumble.gain.gain.setTargetAtTime(0.03 + l * 0.24, t, 0.12)
-  roll.rumble.filter.frequency.setTargetAtTime(90 + l * 130, t, 0.2)
-  roll.gravel.gain.gain.setTargetAtTime(0.0001 + l * 0.12, t, 0.1)
-  roll.gravel.src.playbackRate.setTargetAtTime(0.55 + l * 0.9, t, 0.15)
-  roll.growlGain.gain.setTargetAtTime(0.0001 + strain * 0.06, t, 0.08)
-  roll.growl.frequency.setTargetAtTime(62 + strain * 30, t, 0.2)
-  rollThuds(l, size)
+  const ground = airborne ? 0 : 1
+  // A touch of flutter on the hiss: runners scraping over ice, not a steady noise.
+  const flutter = 0.85 + Math.random() * 0.3
+  slide.hiss.gain.gain.setTargetAtTime(0.0001 + l * 0.13 * ground * flutter, t, 0.08)
+  slide.hiss.filter.frequency.setTargetAtTime(2400 + l * 3800, t, 0.2)
+  slide.ice.gain.gain.setTargetAtTime(0.0001 + l * l * 0.07 * ground * flutter, t, 0.06)
+  slide.ice.filter.frequency.setTargetAtTime(6000 + l * 3500, t, 0.2)
+  slide.rumble.gain.gain.setTargetAtTime(0.0001 + l * 0.16 * ground, t, 0.1)
+  slide.wind.gain.gain.setTargetAtTime(0.0001 + (airborne ? 0.04 + l * 0.12 : 0.02 + l * 0.07), t, 0.15)
+  slide.wind.filter.frequency.setTargetAtTime(400 + l * 900, t, 0.3)
+  slide.rocket.gain.gain.setTargetAtTime(burning ? 0.35 : 0.0001, t, 0.06)
 }
 
-function rollStop() {
-  if (!roll) return
-  const { rumble, gravel, growl, growlGain } = roll
-  roll = null
+function slideStop() {
+  if (!slide) return
+  const layers = slide
+  slide = null
   const t = ctx.currentTime
-  rumble.gain.gain.setTargetAtTime(0.0001, t, 0.3)
-  gravel.gain.gain.setTargetAtTime(0.0001, t, 0.2)
-  growlGain.gain.setTargetAtTime(0.0001, t, 0.1)
-  rumble.src.stop(t + 1.5)
-  gravel.src.stop(t + 1.5)
-  growl.stop(t + 1.5)
+  for (const layer of [layers.hiss, layers.ice, layers.rumble, layers.wind, layers.rocket]) {
+    layer.gain.gain.setTargetAtTime(0.0001, t, 0.15)
+    layer.src.stop(t + 1)
+  }
   music?.duck(false)
+}
+
+/** The band creaking as you pull it back: a strained, rising tone (0 lets go). */
+let stretchVoice = null
+function stretch(level) {
+  if (!ctx || ctx.state !== 'running') return
+  if (level <= 0) {
+    if (!stretchVoice) return
+    const voice = stretchVoice
+    stretchVoice = null
+    voice.gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.04)
+    voice.osc.stop(ctx.currentTime + 0.3)
+    return
+  }
+  if (!stretchVoice) {
+    const osc = ctx.createOscillator()
+    osc.type = 'sawtooth'
+    const filter = ctx.createBiquadFilter()
+    filter.type = 'lowpass'
+    filter.frequency.value = 700
+    const gain = ctx.createGain()
+    gain.gain.value = 0.0001
+    osc.connect(filter).connect(gain).connect(master)
+    osc.start()
+    stretchVoice = { osc, gain }
+  }
+  const t = ctx.currentTime
+  stretchVoice.osc.frequency.setTargetAtTime(90 + level * 160 + Math.random() * 8, t, 0.05)
+  stretchVoice.gain.gain.setTargetAtTime(0.015 + level * 0.04, t, 0.05)
 }
 
 function ready(name, minGapMs = 0) {
@@ -346,54 +319,81 @@ export const sfx = {
   click() {
     if (ready('click', 40)) tone(660, { type: 'triangle', duration: 0.05, volume: 0.15 })
   },
-  /** A Muscle gain: a bright tick, softer for the ones that trickle in on their own. */
-  gain(passive = false) {
-    if (ready('gain', 110)) tone(880 + Math.random() * 120, { type: 'triangle', duration: 0.07, volume: passive ? 0.05 : 0.07, slideTo: 1400 })
+  /** Let go of the band: a big elastic TWANG and a whoosh, louder the harder you pulled. */
+  launch(power = 1) {
+    if (!ready('launch')) return
+    tone(140 + power * 60, { type: 'sawtooth', duration: 0.35, volume: 0.12, slideTo: 520 })
+    tone(70, { duration: 0.3, volume: 0.18, slideTo: 40 })
+    noise({ duration: 0.6, volume: 0.14 + power * 0.1, from: 300, to: 3200, q: 0.7 })
   },
-  /** A lift: a grunt of effort and the clink of the plates. */
-  lift() {
-    if (!ready('lift', 60)) return
-    tone(150 + Math.random() * 30, { type: 'triangle', duration: 0.1, volume: 0.09, slideTo: 230 })
-    tone(2400 + Math.random() * 500, { type: 'triangle', at: 0.05, duration: 0.05, volume: 0.035 })
+  /** A boost pad: a whoosh sweeping up, a rising synth, and a sparkling chord at the top. */
+  boost() {
+    if (!ready('boost', 120)) return
+    noise({ duration: 0.55, volume: 0.16, from: 500, to: 7000, q: 0.7 })
+    tone(220, { type: 'sawtooth', duration: 0.32, volume: 0.06, slideTo: 1760 })
+    tone(440, { type: 'square', duration: 0.28, volume: 0.04, slideTo: 2637 })
+    for (const [f, at] of [
+      [1568, 0.2],
+      [2093, 0.25],
+      [2637, 0.3],
+    ]) {
+      bell(f, { at, volume: 0.05, decay: 0.35 })
+    }
   },
-  levelUp() {
-    if (!ready('levelUp')) return
-    ;[523, 659, 784, 1047].forEach((f, i) => tone(f, { type: 'square', at: i * 0.07, duration: 0.14, volume: 0.09 }))
+  /** Through a brick wall: a crunch, a clatter of bricks. */
+  smash() {
+    if (!ready('smash', 120)) return
+    tone(90, { duration: 0.3, volume: 0.22, slideTo: 45 })
+    noise({ duration: 0.4, volume: 0.28, from: 2200, to: 300, q: 0.6 })
+    for (let i = 0; i < 4; i += 1) tone(500 + Math.random() * 600, { type: 'square', at: 0.08 + i * 0.06, duration: 0.05, volume: 0.03 })
   },
-  /** Setting your hands on the boulder and heaving: a low thump and a rising effort. */
-  pushStart() {
-    if (!ready('pushStart')) return
-    tone(90, { duration: 0.25, volume: 0.18, slideTo: 60 })
-    noise({ duration: 0.45, volume: 0.12, from: 200, to: 900, q: 0.8 })
-    tone(180, { type: 'triangle', at: 0.1, duration: 0.3, volume: 0.07, slideTo: 300 })
+  rocketOn() {
+    if (!ready('rocketOn', 150)) return
+    noise({ duration: 0.4, volume: 0.18, from: 200, to: 1800, q: 0.5 })
   },
-  /** A new stage's boulder appears in your hands: a puff and a rising boing. */
-  boulderPop() {
-    if (!ready('boulderPop', 200)) return
-    noise({ duration: 0.3, volume: 0.16, from: 3000, to: 600, q: 0.7 })
-    tone(420, { type: 'sine', duration: 0.18, volume: 0.12, slideTo: 980 })
-  },
-  /** Too heavy: the boulder rolls back over you - a crash, a crunch and a sad fall down. */
-  crush() {
-    if (!ready('crush')) return
-    tone(70, { duration: 0.5, volume: 0.25, slideTo: 35 })
-    noise({ duration: 0.45, volume: 0.3, from: 1600, to: 150, q: 0.6 })
-    ;[392, 330, 262].forEach((f, i) => tone(f, { type: 'square', at: 0.35 + i * 0.16, duration: 0.18, volume: 0.06 }))
+  rocketOff() {
+    if (slide) slide.rocket.gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.06)
   },
   /**
-   * A trophy pushed past: a bell that climbs the scale and back down while they keep
-   * coming, so a run of them plays a little tune.
+   * A coin picked up: a bright "ka-ching" - a quick tick, a chime a fifth up and a
+   * sparkle - that climbs the scale and back down while they keep coming, so a line of
+   * them plays a little tune.
    */
-  trophy() {
-    if (!ready('trophy', 90)) return
+  coin() {
+    if (!ready('coin', 60)) return
     const now = performance.now()
     trophyRun = now - trophyAt < TROPHY_RUN_MS ? trophyRun + 1 : 0
     trophyAt = now
     const n = TROPHY_SCALE.length
     const k = trophyRun % (2 * n - 2)
-    bell(TROPHY_SCALE[k < n ? k : 2 * n - 2 - k], { volume: 0.085, decay: 0.32 })
+    const f = TROPHY_SCALE[k < n ? k : 2 * n - 2 - k]
+    tone(f, { type: 'square', duration: 0.05, volume: 0.035 })
+    tone(f * 1.5, { type: 'triangle', at: 0.045, duration: 0.2, volume: 0.07, echo: true })
+    bell(f * 2, { at: 0.05, volume: 0.03, decay: 0.25 })
   },
-  /** Wins paid out (a stage cleared, a badge): a fanfare, a shimmering chord and a shower of coins. */
+  /** The old name for a coin: other systems still ring it. */
+  trophy() {
+    sfx.coin()
+  },
+  /** A Diamond: a glassy arpeggio up through the octave, ringing out. */
+  diamond() {
+    if (!ready('diamond', 120)) return
+    ;[2093, 2637, 3136, 4186].forEach((f, i) => bell(f, { at: i * 0.05, volume: 0.06, decay: 0.5 }))
+    tone(1047, { type: 'triangle', duration: 0.5, volume: 0.05, attack: 0.02, echo: true })
+  },
+  /** NEW BEST! down the slide: a short bright fanfare. */
+  newBest() {
+    if (!ready('newBest', 500)) return
+    ;[523, 659, 784, 1047].forEach((f, i) => tone(f, { type: 'triangle', at: i * 0.08, duration: 0.24, volume: 0.1, echo: true }))
+    tone(1047 * 1.003, { at: 0.34, duration: 0.6, volume: 0.05, attack: 0.04, echo: true })
+    tone(1319, { at: 0.34, duration: 0.6, volume: 0.04, attack: 0.04 })
+  },
+  /** Into a new stage: a little three-note chime. */
+  stage() {
+    if (!ready('stage', 800)) return
+    ;[784, 1047, 1319].forEach((f, i) => tone(f, { type: 'triangle', at: i * 0.09, duration: 0.3, volume: 0.07, echo: true }))
+  },
+  /** A payout (results, gifts, a badge): a fanfare, a shimmering chord and a shower of coins. */
   wins() {
     if (!ready('wins')) return
     ;[784, 988, 1175, 1568].forEach((f, i) => tone(f, { type: 'triangle', at: i * 0.07, duration: 0.2, volume: 0.1, echo: true }))
@@ -403,11 +403,6 @@ export const sfx = {
       tone(f * 0.997, { at: 0.28, duration: 0.9, volume: 0.045, attack: 0.05 })
     }
     for (let i = 0; i < 6; i += 1) bell(2093 + Math.random() * 1200, { at: 0.3 + i * 0.07 + Math.random() * 0.03, volume: 0.035, decay: 0.2 })
-  },
-  crack() {
-    if (!ready('crack', 150)) return
-    noise({ duration: 0.12, volume: 0.35, from: 1800, to: 600, q: 0.8 })
-    tone(220, { type: 'square', duration: 0.08, volume: 0.08, slideTo: 90 })
   },
   reveal() {
     if (!ready('reveal')) return
@@ -421,27 +416,18 @@ export const sfx = {
   error() {
     if (ready('error', 200)) tone(160, { type: 'sawtooth', duration: 0.18, volume: 0.07, slideTo: 110 })
   },
-  rebirth() {
-    if (!ready('rebirth')) return
-    noise({ duration: 0.8, volume: 0.15, from: 200, to: 4000, q: 0.6 })
-    ;[262, 330, 392, 523, 659, 784].forEach((f, i) => tone(f, { type: 'sawtooth', at: 0.1 + i * 0.07, duration: 0.25, volume: 0.06 }))
-  },
-  /** Stepping onto an unlocked Train Zone: a soft rising chime. */
-  zoneEnter() {
-    if (!ready('zoneEnter', 400)) return
-    ;[523, 784, 1047].forEach((f, i) => tone(f, { type: 'sine', at: i * 0.05, duration: 0.28, volume: 0.07 }))
-  },
   /** A jump: a springy little boing. */
   jump() {
     if (ready('jump', 120)) tone(260, { type: 'triangle', duration: 0.18, volume: 0.1, slideTo: 620 })
   },
-  /** Landing from a jump: a soft thump. */
+  /** Landing: a soft thump in the snow. */
   jumpLand() {
     if (!ready('jumpLand', 150)) return
     tone(140, { type: 'sine', duration: 0.12, volume: 0.12, slideTo: 70 })
-    noise({ duration: 0.08, volume: 0.06, from: 900, to: 300, q: 0.7 })
+    noise({ duration: 0.12, volume: 0.08, from: 1400, to: 300, q: 0.7 })
   },
-  rollStart,
-  rollSet,
-  rollStop,
+  stretch,
+  slideStart,
+  slideSet,
+  slideStop,
 }

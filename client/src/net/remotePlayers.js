@@ -1,6 +1,8 @@
 import { Vector3 } from 'three'
 
-import { WORLD } from '../game/push/course'
+import { FIRST_SLED, FIRST_TRAIL } from '@shared/balance'
+
+import { WORLD } from '../game/ride/course'
 import { runtime } from '../game/runtime'
 
 /**
@@ -13,8 +15,8 @@ import { runtime } from '../game/runtime'
 export const remotePlayers = new Map()
 
 const MAX_SNAPSHOTS = 24
-/** The synced `pushMeter` of someone who isn't pushing (see the server's schema). */
-const NOT_PUSHING = -999
+/** The synced `rideMeter` of someone who isn't riding (see the server's schema). */
+const NOT_RIDING = -999
 
 export function upsertRemotePlayer(sessionId, state) {
   let r = remotePlayers.get(sessionId)
@@ -27,34 +29,25 @@ export function upsertRemotePlayer(sessionId, state) {
       yaw: state.rotY,
       speed: 0,
       anim: 'idle',
-      dumbbellId: 'wood',
-      aura: '',
+      sled: FIRST_SLED,
+      trail: FIRST_TRAIL,
       /** Their avatar's outfit, parsed from `look`; `lookKey` is the raw string. */
       look: null,
       lookKey: '',
-      petIds: [],
-      /** Follow state per equipped pet, grown as needed and reused. */
-      pets: [],
-      walkPhase: 0,
       /**
-       * Up the mountain: whether they're there, pushing a boulder ('push') or walking a
-       * SAFEZONE ('free'), where they've reported, and where they're drawn (eased towards
-       * it), across too; `pushStage` is the stage they're on.
+       * Down the slide: whether they're riding (in our world), where they've reported,
+       * and where they're drawn (eased towards it).
        */
-      pushing: false,
-      pushPhase: '',
-      pushMeter: 0,
-      pushX: 0,
+      riding: false,
+      rideMeter: 0,
+      rideX: 0,
+      rideY: 0,
       shownMeter: 0,
       shownX: 0,
-      roll: 0,
-      /** Walking a SAFEZONE: which way they face, and how fast they go. */
-      climbYaw: Math.PI,
-      climbSpeed: 0,
-      /** Their Muscle, and when it last went up (they're lifting: curl). */
-      muscle: state.muscle || 0,
-      liftedAt: 0,
-      /** Where they're drawn: up the track while pushing, else in the plaza. */
+      shownY: 0,
+      rideSpeed: 0,
+      best: 0,
+      /** Where they're drawn: down the slide while riding, else in the lobby. */
       shownAt: new Vector3(state.x, state.y, state.z),
     }
     r.shadow = { position: r.shownAt, size: 1.1, visible: true }
@@ -70,22 +63,22 @@ export function upsertRemotePlayer(sessionId, state) {
     r.emote = state.emote || ''
     r.emoteStart = performance.now()
   }
-  r.dumbbellId = state.dumbbellId || 'wood'
-  r.aura = state.aura || ''
-  if (state.muscle > r.muscle) r.liftedAt = performance.now()
-  r.muscle = state.muscle
+  r.sled = state.sled || FIRST_SLED
+  r.trail = state.trail || FIRST_TRAIL
   r.world = state.world || 0
-  // Climbing in another world: not on this mountain (and not in the plaza either).
-  const pushing = state.pushMeter > NOT_PUSHING && r.world === WORLD
-  if (pushing && !r.pushing) {
+  r.best = state.best || 0
+  // Riding in another world: not on this slide (and not in the lobby either).
+  const riding = state.rideMeter > NOT_RIDING && r.world === WORLD
+  if (riding && !r.riding) {
     // Just started: drawn from where they are, no easing in from elsewhere.
-    r.shownMeter = state.pushMeter
-    r.shownX = state.pushX
+    r.shownMeter = state.rideMeter
+    r.shownX = state.rideX
+    r.shownY = state.rideY
   }
-  r.pushing = pushing
-  r.pushPhase = state.pushPhase || ''
-  r.pushMeter = state.pushMeter
-  r.pushX = state.pushX
+  r.riding = riding
+  r.rideMeter = state.rideMeter
+  r.rideX = state.rideX
+  r.rideY = state.rideY
   if (state.look !== r.lookKey) {
     r.lookKey = state.look
     try {
@@ -93,10 +86,6 @@ export function upsertRemotePlayer(sessionId, state) {
     } catch {
       r.look = null
     }
-  }
-  r.petIds = [...state.petIds]
-  while (r.pets.length < r.petIds.length) {
-    r.pets.push({ id: '', position: r.position.clone(), yaw: 0, hop: 0 })
   }
   const last = r.snaps[r.snaps.length - 1]
   if (!last || last.x !== state.x || last.y !== state.y || last.z !== state.z || last.r !== state.rotY) {
@@ -114,5 +103,4 @@ export function removeRemotePlayer(sessionId) {
 
 export function clearRemotePlayers() {
   for (const id of [...remotePlayers.keys()]) removeRemotePlayer(id)
-  runtime.remotePets.length = 0
 }

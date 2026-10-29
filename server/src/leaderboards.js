@@ -1,10 +1,10 @@
-import { getSphinxStock, refreshStock, saveProfile, topPlayers } from './db.js'
+import { saveProfile, topPlayers } from './db.js'
 import { activePlayers, broadcastAll } from './registry.js'
 
 const REFRESH_MS = 60_000
-let cached = { rebirths: [], muscle: [], height: [], updatedAt: 0 }
+let cached = { playtime: [], distance: [], coins: [], updatedAt: 0 }
 
-/** Latest top-10 boards (Most Rebirths, Most Muscle, Highest Push). */
+/** Latest top-10 boards for the plaza (Playtime, Distance, Coins). */
 export function getLeaderboards() {
   return cached
 }
@@ -16,14 +16,11 @@ async function refresh() {
     await Promise.all(
       [...activePlayers.values()].map(({ room, client }) => {
         const member = room.members.get(client.sessionId)
-        return member ? saveProfile(member.session.profile, member.owner) : null
+        return member && !member.kicked ? saveProfile(member.session.profile, member.owner) : null
       }),
     )
     cached = { ...(await topPlayers(10)), updatedAt: Date.now() }
     broadcastAll('leaderboards', cached)
-    // Sphinx sales on other pods.
-    const before = getSphinxStock()
-    if ((await refreshStock()) !== before) broadcastAll('stock', { sphinx: getSphinxStock() })
   } catch (err) {
     console.error('[leaderboards] refresh failed', err)
   }

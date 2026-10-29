@@ -1,4 +1,6 @@
-import { Color, MeshLambertMaterial } from 'three'
+import { Color, MeshLambertMaterial, Vector3 } from 'three'
+
+import { LIGHTS } from './sceneStyle'
 
 /**
  * The toy-brick look, done in the shader instead of with textures.
@@ -14,7 +16,7 @@ import { Color, MeshLambertMaterial } from 'three'
 export const STYLE = {
   /** Rounded stud tiles. */
   STUDS: 0,
-  /** Hill block: tan studded sides with a grass cap and lip. */
+  /** Hill block: studded sides with a snow cap and lip. */
   TERRAIN: 1,
   /** Building wall with a window grid on the sides. */
   WINDOWS: 2,
@@ -40,17 +42,21 @@ export const STYLE = {
   BELT: 12,
   /** Big square studs, as on the track's cliffs in the reference. */
   BLOCK: 13,
-  /** Big square studs with a grass cap and lip: the reference's grassy cliffs. */
+  /** Big square studs with a snow cap and lip. */
   BLOCK_GRASS: 14,
   /** Big floor tiles with thin seams and a faint checker: the track's floor. */
   TILES: 15,
+  /** Plain; polished metal under the glossy (sled) material, tinting its shine. */
+  METAL: 16,
+  /** Self-lit, with bright bands sweeping down the slide (-Z): boost pads. */
+  BOOST: 17,
 }
 
 /** Shared clock for animated styles; WorldClock advances it once per frame. */
 export const toyTime = { value: 0 }
 
-/** Cap colour for STYLE.TERRAIN blocks; the instance colour is the dirt underneath. */
-export const GRASS_COLOR = new Color('#4fd93a')
+/** Cap colour for STYLE.TERRAIN blocks - snow, here; the instance colour is what's underneath. */
+export const GRASS_COLOR = new Color('#f6f9fd')
 
 const vertexHead = /* glsl */ `
   attribute float aStyle;
@@ -81,6 +87,36 @@ const vertexBody = /* glsl */ `
   #else
     vToyDepth = vToyTop - vToyPos.y;
   #endif
+`
+
+/** Towards the sun, for the glossy variant's highlight. */
+const SUN_DIR = new Vector3(...LIGHTS.sunDirection).normalize()
+
+/**
+ * The glossy variant's extra shine, after lighting: a sharp sun highlight, the sky and
+ * snow reflected at grazing angles, and for METAL a tinted mirror sheen. Cheap - a few
+ * dot products, no textures - and only on the few meshes that use it (the sleds).
+ */
+const glossFragment = /* glsl */ `
+  {
+    vec3 gN = normalize(normal);
+    vec3 gV = normalize(vViewPosition);
+    vec3 gL = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
+    float metal = step(15.5, vToyStyle);
+    float glow = step(4.5, vToyStyle) * step(vToyStyle, 5.5);
+    float fres = pow(1.0 - max(dot(gN, gV), 0.0), 3.0);
+    float spec = pow(max(dot(gN, normalize(gL + gV)), 0.0), mix(80.0, 36.0, metal));
+    vec3 gR = inverseTransformDirection(reflect(-gV, gN), viewMatrix);
+    vec3 sky = mix(vec3(0.95, 0.97, 1.0), vec3(0.42, 0.66, 0.98), clamp(gR.y * 1.6, 0.0, 1.0));
+    vec3 env = mix(sky, sky * diffuseColor.rgb * 1.7, metal);
+    outgoingLight = mix(outgoingLight, env, (fres * 0.45 + metal * 0.3) * (1.0 - glow));
+    outgoingLight += mix(vec3(1.0), diffuseColor.rgb + 0.35, metal) * spec * (0.7 + metal * 0.5) * (1.0 - glow * 0.8);
+    // Shiny vinyl: a broad soft sheen round the highlight, and the bright sky window
+    // reflected along the tops of curved surfaces, as on an inflatable toy.
+    float sheen = pow(max(dot(gN, normalize(gL + gV)), 0.0), 10.0) * 0.14;
+    float window = smoothstep(0.62, 0.9, gR.y) * smoothstep(0.2, 0.6, fres + 0.25) * 0.22;
+    outgoingLight += vec3(sheen + window) * (1.0 - glow);
+  }
 `
 
 const fragmentHead = /* glsl */ `
@@ -240,8 +276,13 @@ const fragmentBody = /* glsl */ `
     } else if (style < 15.0) {
       if (isTop || vToyDepth < 0.55) col = uGrass * (isTop ? 1.0 : 0.86);
       col *= toyBlock(suv * 0.62);
-    } else {
+    } else if (style < 16.0) {
       col *= toyFloor(suv / 2.25);
+    } else if (style > 16.5) {
+      // Boost: glowing, with bright bands racing down the slide the way it sends you.
+      float wave = smoothstep(0.55, 0.95, fract(vToyPos.z * 0.6 + uTime * 3.0));
+      totalEmissiveRadiance += col * (0.75 + wave * 0.9);
+      col = mix(col, vec3(1.0, 0.98, 0.8), wave * 0.35);
     }
 
     diffuseColor.rgb = col;
@@ -262,6 +303,7 @@ export function createToyMaterial({
   vertexColors = !instanced,
   map = null,
   studScale = 2,
+  gloss = false,
 } = {}) {
   const material = new MeshLambertMaterial({ color: 0xffffff, vertexColors, map })
 
@@ -277,9 +319,15 @@ export function createToyMaterial({
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${fragmentHead}`)
       .replace('#include <color_fragment>', `#include <color_fragment>\n${fragmentBody}`)
+    if (gloss) {
+      shader.uniforms.uSunDir = { value: SUN_DIR }
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform vec3 uSunDir;')
+        .replace('#include <opaque_fragment>', `${glossFragment}\n#include <opaque_fragment>`)
+    }
   }
   // The stud scale is a uniform, so materials differing only in it share a program.
-  material.customProgramCacheKey = () => 'toy-v3'
+  material.customProgramCacheKey = () => (gloss ? 'toy-v3-gloss' : 'toy-v3')
   return material
 }
 
@@ -297,7 +345,10 @@ let shared = null
 export function sharedMaterials() {
   if (!shared) {
     const toy = createToyMaterial({ instanced: true, vertexColors: true, studScale: 2 })
-    shared = { toy, blocks: toy, props: toy }
+    // The sleds: the same toy styles with a glossy finish. A second program, but only a
+    // handful of meshes use it.
+    const sled = createToyMaterial({ instanced: true, vertexColors: true, studScale: 2, gloss: true })
+    shared = { toy, blocks: toy, props: toy, sled }
   }
   return shared
 }

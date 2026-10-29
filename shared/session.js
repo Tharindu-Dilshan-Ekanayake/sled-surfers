@@ -1,136 +1,94 @@
+import { RACE, RIDE_TIMEOUT_MS, TRAILS, WORLDS } from './balance.js'
+import { courseOf } from './course.js'
 import {
-  DUMBBELLS,
-  EGGS,
-  GRAB_REACH,
-  ITEMS,
-  LIFT_BURST,
-  MAX_LIFTS_PER_SECOND,
-  MULTI_HATCH,
-  PUSH_SPEED_MAX,
-  PUSH_START,
-  PUSH_TIMEOUT_MS,
-  SHOP,
-  TRAIN_INTERVAL,
-  TRAIN_ZONES,
-  WIN_PAD,
-  WORLD_PORTALS,
-} from './balance.js'
-import {
-  advanceTutorial,
-  applyLift,
-  applyRebirth,
-  applyTrain,
-  awardBadge,
-  buyDumbbell,
-  buyMusclePack,
-  buyShopItem,
-  claimDaily,
-  claimFreeReward,
-  claimPlaytime,
+  buyDiamondItem,
+  buySled,
+  buyTrail,
+  buyUpgrade,
+  claimFreeCoins,
+  claimGift,
+  claimLogin,
+  claimTask,
+  claimTaskChest,
+  collectAwayCoins,
   createSession,
-  deletePet,
-  equipAura,
-  equipBestPets,
-  equipDumbbell,
-  equipPet,
-  hatchEgg,
-  isMaxLevel,
-  isZoneUnlocked,
-  onWinPad,
-  skipRebirth,
-  trackOf,
-  TRACKS,
-  unequipPet,
-  usePotion,
-  winsMultiplier,
-  worldUnlocked,
+  dailyTasks,
+  equipSled,
+  equipTrail,
+  finishRide,
+  giftStatus,
+  giftsToday,
+  grantAdReward,
+  playGifts,
+  recordLogin,
+  setWorld,
 } from './logic.js'
-import {
-  DUMBBELL_PADS,
-  eggStandNear,
-  FREE_REWARD,
-  inPushZone,
-  inRect,
-  MAX_MOVE_SPEED,
-  padRect,
-  portalAt,
-  TRACK_HALF_WIDTH,
-  benchAt,
-} from './world.js'
+import { maxRideSpeed, rideStats } from './ride.js'
+import { onLaunchPad } from './world.js'
 
-const DUMBBELL_INDEX = Object.fromEntries(DUMBBELLS.map((d, i) => [d.id, i]))
-
-/** How far outside a Train Zone still counts as "on" it (network jitter). */
-/** A seated player's reported position may wander this far off the bench (lag). */
-const SEAT_SLACK = 0.5
-/** Same for the push zone. */
-const PUSH_SLACK = 1.5
-/** Pads are bought by standing on them; allow for a little lag. */
+/** The pad's reach, allowing for a little lag in the position reports. */
 const PAD_SLACK = 2
-/** How far to either side of the track a pusher may report being. */
-const TRACK_X = TRACK_HALF_WIDTH - 1
+/** How far past what it could really have got a ride's report may run (lag, frame steps). */
+const RIDE_SLACK = 12
 
 /**
- * One player's authoritative session: validates intents, runs the training tick and
- * reports what happened through `emit`.
+ * One player's authoritative session: validates intents and reports what happened
+ * through `emit`.
  *
  * Transport-agnostic on purpose. The Colyseus room wraps one of these per client; the
  * offline mode wraps one for the local player. Either way the rules that run are
  * byte-for-byte the same.
  *
- * Events emitted (type, payload):
- * - 'profile'    { profile, session }  full state, after anything structural
- * - 'train'      { source, zone, gain, muscle, level, leveledUp, maxed }  each Muscle
- *                  gain; `source` is 'lift' (a click) or 'zone' (training in Train
- *                  Zone `zone`). Walking earns nothing.
- * - 'push'       { stage, reach, power, start, x }  you've taken stage `stage`'s boulder:
- *                  your power (your Muscle now) and how far it pushes it before it runs out
- * - 'pushReward' { wins, stage, top }  Wins for the WINS pad just walked onto
- * - 'orb'        { index, wins }  Wins for the Wins orb just pushed into
- * - 'pushEnd'    { reason }  the climb is over, back in the plaza ('crushed', 'left',
- *                  'top', 'timeout')
- * - 'pack'       { amount }  a Muscle pack landed
- * - 'hatch'      { eggId, pets: [{ uid, id }] }  pets to reveal
- * - 'badge'      { id, name }
+ * A ride is simulated by the client (it's a physics toy, and it must feel instant);
+ * the session holds it to what's possible: never further than its gear could have
+ * slid it in the time it's had, each Coin and Diamond only once and only when the ride
+ * has got to it. What a ride pays is worked out here, from what was accepted.
  *
- * A climb up the mountain alternates between pushing a stage's boulder ('push') and
- * walking about a SAFEZONE without one ('free'). `onPush(push | null)` lets the host
- * show other players where someone is on it.
+ * Events emitted (type, payload):
+ * - 'profile'    { profile, session }  full state, after anything that changed it
+ * - 'ride'       { world }             a ride has begun (or 'rideEnd' { reason: 'refused' })
+ * - 'diamond'    { index }             a milestone Diamond paid
+ * - 'rideResult' { distance, best, newBest, gained, finished, picked, far, bonus, total, world }
+ * - 'rideEnd'    { reason }            the server ended a ride ('timeout', 'refused', 'left')
+ * - 'reward'     { coins?, diamonds?, chest?, source }  a gift, task, chest, free coins, an ad or the Diamond shop
+ * - 'badge'      { id, name }
  */
 export class PlayerSession {
   /**
    * @param {object} profile normalized profile (see logic.normalizeProfile)
    * @param {{ now: number, emit: (type: string, payload?: object) => void,
    *           getPosition: () => {x: number, y: number, z: number},
-   *           onPurchase?: (productId: string) => boolean,
-   *           onPush?: (push: object | null) => void }} options
-   *   `onPurchase` lets the host veto or count a shop sale (stock limits).
+   *           verified?: boolean, onRide?: (ride: object | null) => void }} options
+   *   `verified`: signed in with Boxity (the free coins need it). `onRide` lets the host
+   *   show other players where someone is on the slide.
    */
-  constructor(profile, { now, emit, getPosition, onPurchase, onPush }) {
+  constructor(profile, { now, emit, getPosition, verified = false, onRide }) {
     this.profile = profile
     this.session = createSession(now)
     this.emit = emit
     this.getPosition = getPosition
-    this.onPurchase = onPurchase
-    this.onPush = onPush
-
-    /** Train Zone the client says it's in; verified against position every tick. */
-    this.zone = -1
-    this.trainTimer = 0
-    /**
-     * The climb in progress: { phase: 'push' | 'free', stage, startedAt, start, power,
-     * reach, meter, x, lastReportAt, lastMoveAt, paidPads }. Pushing, `stage` is the
-     * boulder's; free, it's the stage the SAFEZONE leads up to.
-     */
-    this.push = null
-    /** Wins earned climbing (WINS pads and orbs) not yet counted towards a leaderboard. */
-    this.winsEarned = 0
-    /** Server time until which a new push can't start (just after one ended). */
-    this.busyUntil = 0
-    /** Lifts banked (a token bucket refilling at MAX_LIFTS_PER_SECOND), and when last refilled. */
-    this.liftTokens = LIFT_BURST
-    this.liftRefilledAt = now
+    this.verified = verified
+    this.onRide = onRide
+    /** The race (RaceHost) this player has just been started in, until they set off. */
+    this.raceId = 0
+    /** The ride in progress: { world, startedAt, s, x, lastAt, cap, coins: Set, diamonds: Set, walls: Set, boosts: Set }. */
+    this.ride = null
+    /** Coins earned on rides not yet counted towards a leaderboard. */
+    this.coinsEarned = 0
     this.dirty = false
+    dailyTasks(profile, now)
+    // Back after a while: what INCOME made meanwhile (handed over by greet), and today's visit.
+    this.away = collectAwayCoins(profile, now)
+    recordLogin(profile, now)
+  }
+
+  /**
+   * The welcome, once the client has its profile: the Coins earned while away, if any
+   * ('away' { coins, minutes }). Today's login prize, if it's waiting, shows from the profile.
+   */
+  greet() {
+    if (this.away) this.emit('away', this.away)
+    this.away = null
   }
 
   // --- Plumbing --------------------------------------------------------------------
@@ -140,418 +98,262 @@ export class PlayerSession {
     this.emit('profile', { profile: this.profile, session: this.session })
   }
 
-  badge(id) {
-    const badge = awardBadge(this.profile, id)
-    if (badge) {
-      this.dirty = true
-      this.emit('badge', badge)
-    }
-  }
-
-  tutorial(event) {
-    if (advanceTutorial(this.profile, event)) this.dirty = true
-  }
-
-  // --- Intents ---------------------------------------------------------------------
 
   /** Dispatches one client message. Unknown types are ignored. */
   handle(type, payload = {}, now) {
     const handler = this.handlers[type]
     if (!handler) return
+    dailyTasks(this.profile, now)
+    // Playing on past midnight: the next day's prize opens without rejoining.
+    if (recordLogin(this.profile, now)) this.dirty = true
     handler.call(this, payload || {}, now)
     if (this.dirty) this.sendProfile()
   }
 
-  handlers = {
-    enterZone({ zone }) {
-      const index = Number(zone)
-      if (!Number.isInteger(index) || !TRAIN_ZONES[index]) return
-      if (!isZoneUnlocked(this.profile, index)) return
-      if (this.zone !== index) {
-        this.zone = index
-        // The first lift lands a beat after stepping on, not instantly.
-        this.trainTimer = TRAIN_INTERVAL * 0.5
-      }
-    },
-
-    leaveZone() {
-      this.zone = -1
-    },
-
-    /** One click: a lift with your dumbbell, worth more in a Train Zone. */
-    lift(_payload, now) {
-      this.liftTokens = Math.min(LIFT_BURST, this.liftTokens + ((now - this.liftRefilledAt) / 1000) * MAX_LIFTS_PER_SECOND)
-      this.liftRefilledAt = now
-      if (this.liftTokens < 1) return
-      this.liftTokens -= 1
-      const zone = !this.push && this.onClaimedZone() ? this.zone : -1
-      this.gain('lift', zone, applyLift(this.profile, zone, now))
-      this.tutorial('lift')
-    },
-
-    setting({ key, value }) {
-      if (key !== 'autoRebirth') return
-      this.profile.settings.autoRebirth = Boolean(value)
-      this.dirty = true
-    },
-
-    rebirth() {
-      if (this.push) return
-      const result = applyRebirth(this.profile)
-      if (result.ok) this.afterRebirth()
-    },
-
-    skipRebirth() {
-      if (this.push) return
-      const result = skipRebirth(this.profile)
-      if (result.ok) this.afterRebirth()
-    },
-
-    /**
-     * Takes a stage's boulder: the first from the PUSH ZONE in the plaza, each one after
-     * from the SAFEZONE below it, standing by it. Its power is all your Muscle now.
-     */
-    startPush(_payload, now) {
-      if (now < this.busyUntil) return
-      const climb = this.push
-      // A climb stays on the track of the world it started in.
-      const track = climb ? TRACKS[climb.world] : trackOf(this.profile)
-      let stage = 0
-      let x = 0
-      if (climb) {
-        if (climb.phase !== 'free') return
-        if (climb.meter < track.stageStart(climb.stage) + PUSH_START - GRAB_REACH - 1) return
-        stage = climb.stage
-        x = climb.x
-      } else {
-        const p = this.getPosition()
-        if (!inPushZone(p.x, p.z, PUSH_SLACK)) return
-        x = p.x
-        this.profile.stats.pushes += 1
-      }
-      const power = this.profile.muscle
-      const start = track.stageStart(stage) + PUSH_START
-      const reach = Math.round(track.stageReach(stage, power) * 100) / 100
-      x = Math.max(-TRACK_X, Math.min(TRACK_X, x))
-      this.push = {
-        phase: 'push',
-        world: track.index,
-        stage,
-        startedAt: now,
-        start,
-        power,
-        reach,
-        meter: start,
-        x,
-        lastReportAt: now,
-        lastMoveAt: now,
-        paidPads: climb?.paidPads ?? [],
-        orbs: climb?.orbs ?? [],
-      }
-      this.zone = -1
-      this.emit('push', { stage, reach, power, start, x })
-      this.onPush?.(this.push)
-      this.dirty = true
-      this.tutorial('push')
-      this.badge('firstPush')
-    },
-
-    /**
-     * Where the climber has got to. Pushing, trusted only as far as they could really
-     * have got: no further than their power pushes the boulder, nor than pushing flat
-     * out since they took it could take them; over the top of the slope they're free in
-     * the SAFEZONE above. Free, only within that SAFEZONE and at walking pace. A WINS pad
-     * stood on cashes the climb in: it pays for everything climbed, and the climb's over.
-     */
-    pushAt({ meter, x }, now) {
-      const climb = this.push
-      if (!climb) return
-      const m = Number(meter)
-      if (!Number.isFinite(m)) return
-      const track = TRACKS[climb.world]
-      climb.x = Math.max(-TRACK_X, Math.min(TRACK_X, Number(x) || 0))
-      climb.lastReportAt = now
-      if (climb.phase === 'push') {
-        const allowed = Math.min(climb.reach, climb.start + ((now - climb.startedAt) / 1000) * PUSH_SPEED_MAX + 4)
-        climb.meter = Math.max(climb.start - 2, Math.min(m, allowed))
-        if (climb.meter >= track.stageTop(climb.stage) - 0.01 && climb.stage < track.stages.length - 1) {
-          climb.phase = 'free'
-          climb.stage += 1
-          climb.lastMoveAt = now
-        }
-      } else {
-        const step = Math.abs(m - climb.meter)
-        const dt = Math.max(0.05, (now - climb.lastMoveAt) / 1000)
-        if (step <= MAX_MOVE_SPEED * dt + 2) {
-          climb.meter = Math.max(track.safeStart(climb.stage), Math.min(m, track.stageStart(climb.stage) + PUSH_START + 0.5))
-          climb.lastMoveAt = now
-        }
-      }
-      this.onPush?.(climb)
-      const stats = this.profile.stats
-      stats.bestMeter = Math.max(stats.bestMeter, Math.round(climb.meter * 10) / 10)
-
-      for (const pad of track.winPads) {
-        if (climb.paidPads.includes(pad.stage) || !onWinPad(pad, climb.meter, climb.x, WIN_PAD.slack)) continue
-        climb.paidPads.push(pad.stage)
-        const wins = Math.max(1, Math.round(pad.wins * winsMultiplier(this.profile, now)))
-        const top = pad.stage === track.stages.length - 1
-        this.profile.wins += wins
-        this.winsEarned += wins
-        this.dirty = true
-        this.emit('pushReward', { wins, stage: pad.stage, top })
-        this.tutorial('cashIn')
-        if (pad.stage === 0 && climb.world === 0) this.badge('frozenPeak')
-        if (top) {
-          stats.tops += 1
-          this.badge('top')
-        }
-        this.finishPush(now, top ? 'top' : 'win')
-        return
-      }
-    },
-
-    /**
-     * A Wins orb the boulder's rolled into: paid at once, once a climb - if the climb's
-     * really by it: pushing up its stage, just short of it, on its side of the track.
-     */
-    collectOrb({ index }, now) {
-      const climb = this.push
-      if (!climb || climb.phase !== 'push') return
-      const orb = TRACKS[climb.world].orbs[Number(index)]
-      if (!orb || orb.stage !== climb.stage || climb.orbs.includes(orb.index)) return
-      if (orb.meter < climb.meter - 3 || orb.meter > climb.meter + 7 || climb.x * orb.side < -0.25) return
-      climb.orbs.push(orb.index)
-      const wins = Math.max(1, Math.round(orb.wins * winsMultiplier(this.profile, now)))
-      this.profile.wins += wins
-      this.winsEarned += wins
-      this.dirty = true
-      this.emit('orb', { index: orb.index, wins })
-    },
-
-    /**
-     * The push is over. Backing off the foot of a stage above the first, you're free in
-     * the SAFEZONE below it; otherwise - crushed on any stage included - the climb's
-     * over and you're back in the plaza.
-     */
-    endPush({ reason }, now) {
-      const climb = this.push
-      if (!climb) return
-      if (climb.phase === 'push' && climb.stage > 0 && reason === 'release') {
-        climb.phase = 'free'
-        climb.meter = TRACKS[climb.world].stageStart(climb.stage) + PUSH_START
-        climb.lastMoveAt = now
-        climb.lastReportAt = now
-        this.onPush?.(climb)
-        return
-      }
-      this.finishPush(now, ['crushed', 'left', 'top'].includes(reason) ? reason : 'left')
-    },
-
-    buyDumbbell({ id }) {
-      if (!this.nearPadFor(id)) return
-      const result = buyDumbbell(this.profile, id)
-      if (!result.ok) return
-      this.dirty = true
-      if (result.bought) this.tutorial('buyDumbbell')
-    },
-
-    equipDumbbell({ id }) {
-      const result = equipDumbbell(this.profile, id)
-      if (result.ok) this.dirty = true
-    },
-
-    equipAura({ id }) {
-      if (equipAura(this.profile, id ?? null).ok) this.dirty = true
-    },
-
-    buyPack({ index }) {
-      const result = buyMusclePack(this.profile, Number(index))
-      if (!result.ok) return
-      this.dirty = true
-      this.emit('pack', { amount: result.amount })
-    },
-
-    hatch({ eggId, count }) {
-      const egg = EGGS[eggId]
-      if (!egg) return
-      const p = this.getPosition()
-      if (eggStandNear(p.x, p.z)?.eggId !== eggId) return
-      const n = count === MULTI_HATCH ? MULTI_HATCH : 1
-      this.reveal(hatchEgg(this.profile, eggId, n))
-    },
-
-    openEggItem({ itemId }) {
-      const item = ITEMS[itemId]
-      if (!item || item.kind !== 'egg') return
-      this.reveal(hatchEgg(this.profile, item.egg, 1, { paid: 'item' }))
-    },
-
-    equipPet({ uid }) {
-      if (equipPet(this.profile, Number(uid)).ok) this.dirty = true
-    },
-
-    unequipPet({ uid }) {
-      unequipPet(this.profile, Number(uid))
-      this.dirty = true
-    },
-
-    equipBest() {
-      equipBestPets(this.profile)
-      this.dirty = true
-    },
-
-    deletePet({ uid }) {
-      if (deletePet(this.profile, Number(uid)).ok) this.dirty = true
-    },
-
-    claimDaily({ day }, now) {
-      const result = claimDaily(this.profile, Number(day), now)
-      this.afterReward(result)
-    },
-
-    claimPlaytime({ index }, now) {
-      const result = claimPlaytime(this.profile, this.session, Number(index), now)
-      this.afterReward(result)
-    },
-
-    claimFreeReward() {
-      const p = this.getPosition()
-      if (Math.hypot(p.x - FREE_REWARD.x, p.z - FREE_REWARD.z) > FREE_REWARD.radius + 1.5) return
-      const result = claimFreeReward(this.profile, this.session)
-      this.afterReward(result)
-    },
-
-    /**
-     * Stepping through a world portal: to its world (the first time, with its Wins), or,
-     * from that world, back to World 1. Not mid-climb.
-     */
-    portal() {
-      if (this.push) return
-      const p = this.getPosition()
-      const portal = portalAt(p.x, p.z, 2)
-      if (!portal) return
-      const there = WORLD_PORTALS[portal.id].world
-      const to = this.profile.world === there ? 0 : there
-      if (!worldUnlocked(this.profile, to)) return
-      if (to === there) this.badge(portal.id)
-      this.profile.world = to
-      this.dirty = true
-      this.emit('world', { world: to })
-    },
-
-    usePotion({ itemId }, now) {
-      const result = usePotion(this.profile, itemId, now)
-      if (!result.ok) return
-      this.dirty = true
-    },
-
-    /** Buys a SHOP item with Wins. */
-    purchase({ productId }) {
-      const item = SHOP[productId]
-      if (!item) return
-      // Checked before the host takes stock, so a short wallet never uses up a Sphinx.
-      if (this.profile.wins < item.price) return
-      if (item.kind === 'pass' && this.profile.passes[productId]) return
-      if (this.onPurchase && !this.onPurchase(productId)) return
-      const result = buyShopItem(this.profile, productId)
-      if (!result.ok) return
-      this.dirty = true
-      this.reveal(result)
-    },
-  }
-
-  afterReward(result) {
+  reward(result, source) {
     if (!result?.ok) return
     this.dirty = true
-    if (result.pets?.length) this.reveal(result)
+    this.emit('reward', { coins: result.coins || 0, diamonds: result.diamonds || 0, chest: result.chest || null, source })
   }
 
-  /** Sends newly gained pets to the client's hatch animation. */
-  reveal(result) {
-    if (!result?.ok || !result.pets?.length) return
-    this.dirty = true
-    this.emit('hatch', { eggId: result.eggId ?? null, pets: result.pets })
-    this.tutorial('hatch')
-    this.badge('firstPet')
-  }
-
-  afterRebirth() {
-    this.dirty = true
-    this.tutorial('rebirth')
-    if (this.profile.rebirths === 1) this.badge('firstRebirth')
-  }
-
-  /** Ends the climb in progress, if any, and tells the client (it may already know). */
-  finishPush(now, reason) {
-    if (!this.push) return
-    this.push = null
-    this.busyUntil = now + 600
-    this.dirty = true
-    this.onPush?.(null)
-    this.emit('pushEnd', { reason })
-  }
-
-  // --- Simulation ------------------------------------------------------------------
-
-  /** Whether the player stands on (or right by) the pad for dumbbell `id`. */
-  nearPadFor(id) {
-    const pad = DUMBBELL_PADS[DUMBBELL_INDEX[id]]
-    if (!pad) return false
-    const p = this.getPosition()
-    return inRect(padRect(pad), p.x, p.z, PAD_SLACK)
-  }
-
-  /** Whether the player is really sitting on the bench of the Train Zone they claim. */
-  onClaimedZone() {
-    if (this.zone < 0) return false
-    const p = this.getPosition()
-    return benchAt(p.x, p.z, SEAT_SLACK) === this.zone
-  }
-
-  /** Advances training and pushing. Call at a steady rate (the room's simulation interval). */
-  tick(dt, now) {
-    if (this.push) {
-      if (now - this.push.lastReportAt > PUSH_TIMEOUT_MS) this.finishPush(now, 'timeout')
-    } else if (this.zone >= 0 && now >= this.busyUntil && this.onClaimedZone()) {
-      this.trainTimer += dt
-      while (this.trainTimer >= TRAIN_INTERVAL) {
-        this.trainTimer -= TRAIN_INTERVAL
-        this.trainOnce(now)
+  handlers = {
+    /**
+     * Let go of the slingshot standing on the pad: a ride begins. `id` is the client's
+     * number for it, echoed in everything about it, so a late answer about one ride is
+     * never taken for the next. A ride still open (its end lost on a bad connection) is
+     * banked first.
+     */
+    startRide({ id, race }, now) {
+      if (this.ride) this.finish(now)
+      const rideId = Number.isFinite(Number(id)) ? Number(id) : 0
+      // The race this player was started in (RaceHost), once: on the race sled, from
+      // wherever the start found them.
+      const racing = Boolean(this.raceId) && Number(race) === this.raceId
+      const p = this.getPosition()
+      if (!racing && !onLaunchPad(p.x, p.z, PAD_SLACK)) {
+        this.emit('rideEnd', { reason: 'refused', id: rideId })
+        return
       }
-    } else {
-      this.trainTimer = Math.min(this.trainTimer, TRAIN_INTERVAL * 0.5)
-    }
-    this.profile.stats.playtime += dt
+      const stats = racing ? RACE.stats : rideStats(this.profile)
+      const raceId = racing ? this.raceId : 0
+      this.raceId = 0
+      this.ride = {
+        id: rideId,
+        race: raceId,
+        world: this.profile.world,
+        startedAt: now,
+        lastAt: now,
+        s: 0,
+        x: 0,
+        cap: maxRideSpeed(stats, WORLDS[this.profile.world]),
+        coins: new Set(),
+        diamonds: new Set(),
+        walls: new Set(),
+        boosts: new Set(),
+      }
+      this.onRide?.(this.ride)
+      this.emit('ride', { world: this.ride.world })
+      if (raceId) this.onRaceStart?.(raceId)
+    },
+
+    /** Join the race whose window is open (the room's RaceHost decides). */
+    joinRace(_payload, now) {
+      this.onJoinRace?.(now)
+    },
+
+    /** Where the ride has got to: trusted only as far as its gear could have taken it. */
+    rideAt({ s, x, y }, now) {
+      const ride = this.ride
+      if (!ride || !this.advance(s, now)) return
+      ride.x = Math.max(-20, Math.min(20, Number(x) || 0))
+      ride.y = Number.isFinite(Number(y)) ? Number(y) : 0
+      this.onRide?.(ride)
+    },
+
+    /**
+     * Picked up Coin `index` at metre `s` (sent with it, so a fast sled's pickups aren't
+     * ahead of the last position report): only one the ride has really reached.
+     */
+    collectCoin({ index, s }, now) {
+      const ride = this.ride
+      if (!ride) return
+      this.advance(s, now)
+      const coin = courseOf(ride.world).coins[Number(index)]
+      if (!coin || ride.coins.has(coin.index) || coin.s > ride.s + 6) return
+      ride.coins.add(coin.index)
+    },
+
+    /** A milestone Diamond: paid at once. */
+    collectDiamond({ index, s }, now) {
+      const ride = this.ride
+      if (!ride) return
+      this.advance(s, now)
+      const gem = courseOf(ride.world).diamonds[Number(index)]
+      if (!gem || ride.diamonds.has(gem.index) || gem.s > ride.s + 6) return
+      ride.diamonds.add(gem.index)
+      this.profile.diamonds += 1
+      this.dirty = true
+      this.emit('diamond', { index: gem.index })
+    },
+
+    /** A wall smashed or a boost pad hit, for the daily tasks. */
+    rideHit({ kind, index, s }, now) {
+      const ride = this.ride
+      if (!ride || (kind !== 'wall' && kind !== 'boost')) return
+      this.advance(s, now)
+      const list = kind === 'wall' ? courseOf(ride.world).walls : courseOf(ride.world).boosts
+      const item = list[Number(index)]
+      if (!item || item.s > ride.s + 6) return
+      ;(kind === 'wall' ? ride.walls : ride.boosts).add(item.index)
+    },
+
+    /** The sled's stopped (or crossed the finish, or END was pressed): bank the ride. */
+    endRide({ s, id }, now) {
+      if (!this.ride) return
+      // The end of an earlier ride, arriving late: this one carries on.
+      if (id !== undefined && Number(id) !== this.ride.id) return
+      this.advance(s, now)
+      this.finish(now)
+    },
+
+    upgrade({ kind }) {
+      if (buyUpgrade(this.profile, String(kind)).ok) this.dirty = true
+    },
+
+    buySled({ id }) {
+      if (buySled(this.profile, String(id)).ok) this.dirty = true
+    },
+
+    equipSled({ id }) {
+      if (equipSled(this.profile, String(id)).ok) this.dirty = true
+    },
+
+    buyTrail({ id }) {
+      if (!TRAILS[id]) return
+      if (buyTrail(this.profile, id).ok) this.dirty = true
+    },
+
+    equipTrail({ id }) {
+      if (equipTrail(this.profile, String(id)).ok) this.dirty = true
+    },
+
+    setWorld({ world }) {
+      if (this.ride) return
+      const result = setWorld(this.profile, world)
+      if (!result.ok) return
+      this.dirty = true
+      this.emit('world', { world: result.world })
+    },
+
+    claimGift({ index }, now) {
+      this.reward(claimGift(this.profile, Number(index), now), 'gift')
+    },
+
+    claimAllGifts(_payload, now) {
+      let coins = 0
+      let diamonds = 0
+      for (const gift of giftStatus(giftsToday(this.profile, now))) {
+        if (gift.state !== 'ready') continue
+        const got = claimGift(this.profile, gift.index, now)
+        coins += got.coins || 0
+        diamonds += got.diamonds || 0
+      }
+      if (coins || diamonds) this.reward({ ok: true, coins, diamonds }, 'gift')
+    },
+
+    claimTask({ index }, now) {
+      this.reward(claimTask(this.profile, Number(index), now), 'task')
+    },
+
+    claimTaskChest(_payload, now) {
+      this.reward({ ...claimTaskChest(this.profile, now), chest: 'blue' }, 'chest')
+    },
+
+    /** Something from the Diamond shop: a coin pack, a premium sled, Gold Rush early. */
+    buyDiamondItem({ id }) {
+      const result = buyDiamondItem(this.profile, String(id))
+      if (!result.ok) return
+      this.dirty = true
+      if (result.spent) this.emit('reward', { coins: result.coins || 0, diamonds: 0, sled: result.sled || null, world: result.world ?? null, source: 'shop' })
+    },
+
+    /** Today's login-streak prize. */
+    claimLogin(_payload, now) {
+      const result = claimLogin(this.profile, now)
+      if (!result.ok) return
+      this.dirty = true
+      this.emit('reward', { coins: result.coins, diamonds: result.diamonds, chest: result.chest, trail: result.trail, source: 'login' })
+    },
+
+    claimFreeCoins() {
+      this.reward(claimFreeCoins(this.profile, this.verified), 'free')
+    },
+
+    notifyMe() {
+      this.profile.notify = true
+      this.dirty = true
+    },
+  }
+
+  /**
+   * Moves the ride on to metre `s`, but no further than its gear could have slid it
+   * since it began (nor past the end of the slide's run-out). Returns whether `s` was a
+   * number.
+   */
+  advance(s, now) {
+    const ride = this.ride
+    const m = Number(s)
+    if (!ride || !Number.isFinite(m)) return false
+    const allowed = ((now - ride.startedAt) / 1000) * ride.cap + RIDE_SLACK
+    ride.s = Math.max(ride.s, Math.min(m, allowed, courseOf(ride.world).length + 200))
+    ride.lastAt = now
+    return true
+  }
+
+  /** Ends the ride in progress, banking what it earned. */
+  finish(now, reason = null) {
+    const ride = this.ride
+    if (!ride) return
+    this.ride = null
+    this.onRide?.(null)
+    const result = finishRide(
+      this.profile,
+      { world: ride.world, distance: ride.s, pickups: ride.coins.size, smashes: ride.walls.size, boosts: ride.boosts.size, race: Boolean(ride.race) },
+      now,
+    )
+    this.coinsEarned += result.total
+    this.dirty = true
+    this.emit('rideResult', { ...result, badges: undefined, id: ride.id })
+    for (const badge of result.badges) this.emit('badge', badge)
+    if (reason) this.emit('rideEnd', { reason, id: ride.id })
+    if (ride.race) this.onRaceEnd?.(ride.race, ride.s)
+  }
+
+  /** A race prize: Diamonds (RaceHost settles who wins what). */
+  awardRace(diamonds) {
+    this.profile.diamonds += diamonds
+    this.reward({ ok: true, diamonds }, 'race')
+  }
+
+  /** Boxity confirmed a rewarded ad: pays it, if there's something to pay. */
+  grantAdReward(placement, now) {
+    const result = grantAdReward(this.profile, placement, now)
+    if (result.ok) this.coinsEarned += result.coins
+    this.reward(result, 'ad')
     if (this.dirty) this.sendProfile()
+    return result
   }
 
-  /** Tells the client about a Muscle gain from `source` ('lift' or 'zone'). */
-  gain(source, zone, result) {
-    if (result.gain > 0) {
-      this.emit('train', {
-        source,
-        zone,
-        gain: result.gain,
-        muscle: this.profile.muscle,
-        level: this.profile.level,
-        leveledUp: result.leveledUp,
-        maxed: result.maxed,
-      })
-    }
-    if (this.profile.settings.autoRebirth && !this.push && isMaxLevel(this.profile)) {
-      const rebirth = applyRebirth(this.profile)
-      if (rebirth.ok) this.afterRebirth()
-    }
-  }
 
-  trainOnce(now) {
-    const result = applyTrain(this.profile, this.zone, now)
-    if (!result.ok) {
-      this.zone = -1
-      return
-    }
-    this.gain('zone', this.zone, result)
-    this.tutorial('train')
+  /** Call at a steady rate (the room's simulation interval). */
+  tick(dt, now) {
+    if (this.ride && now - this.ride.lastAt > RIDE_TIMEOUT_MS) this.finish(now, 'timeout')
+    this.profile.stats.playtime += dt
+    // Today's gifts open with play; the client counts on between profile updates, so
+    // they're only sent when one is just ready.
+    const before = giftStatus(giftsToday(this.profile, now)).filter((g) => g.state === 'ready').length
+    playGifts(this.profile, dt, now)
+    if (giftStatus(this.profile.gifts).filter((g) => g.state === 'ready').length !== before) this.dirty = true
+    if (this.dirty) this.sendProfile()
   }
 }

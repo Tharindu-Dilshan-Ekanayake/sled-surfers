@@ -3,33 +3,36 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { WebGLRenderer } from 'three'
 
+import { WORLDS } from '@shared/balance'
+
 import { useBloxity } from '../bloxity/BloxityContext'
 import { useGame } from '../store/game'
 import { useQuality } from '../store/quality'
 import ErrorBoundary from '../ui/ErrorBoundary'
-import Auras from './Auras'
 import BlobShadows from './BlobShadows'
-import FollowCamera from './FollowCamera'
-import GainFX from './fx/GainFX'
-import WorldLabels from './labels/WorldLabels'
-import Pets, { RewardCrab, SphinxShowcase } from './pets/Pets'
-import RemoteAvatars from './remote/RemoteAvatars'
-import RemotePlayers from './remote/RemotePlayers'
-import Particles from './fx/Particles'
-import LiftInput from './LiftInput'
-import Boulders from './push/Boulders'
 import ChatBubbles from './ChatBubbles'
-import DumbbellShop from './world/DumbbellShop'
-import EggDisplays from './world/EggDisplays'
-import Leaderboards from './world/Leaderboards'
-import Portal from './world/Portal'
-import TutorialArrows from './world/TutorialArrows'
+import FollowCamera from './FollowCamera'
+import Particles from './fx/Particles'
+import SpeedFX from './fx/SpeedFX'
+import SpeedLines from './fx/SpeedLines'
+import WorldLabels from './labels/WorldLabels'
 import Lighting from './Lighting'
 import PerfProbe from './PerfProbe'
 import Player from './Player'
+import RemoteAvatars from './remote/RemoteAvatars'
+import RemotePlayers from './remote/RemotePlayers'
 import ShaderWarmup from './ShaderWarmup'
-import { FOG, SKY } from './sceneStyle'
+import { SKY } from './sceneStyle'
+import { renderIcons3d } from './icons3d'
+import { setBaseFov } from './runtime'
+import { applyWorldLook } from './worldLook'
 import Sky from './Sky'
+import { attachIconRenderer, processIconQueue } from './sleds/sledIcons'
+import Snowfall from './Snowfall'
+import Slingshot from './Slingshot'
+import Trail from './Trail'
+import Leaderboards from './world/Leaderboards'
+import Pedestals from './world/Pedestals'
 import World from './world/World'
 
 // r3f-perf is a dev-only overlay (?perf in the URL). The DEV check is static, so the
@@ -39,9 +42,9 @@ const DevPerf = import.meta.env.DEV
   : null
 const showDevPerf = import.meta.env.DEV && new URLSearchParams(window.location.search).has('perf')
 
-// The track up the mountain is its own chunk, fetched once the lobby is on screen so it
-// never delays time-to-playable.
-const Push = lazy(() => import('./push/Push'))
+// The slide down the mountain is its own chunk, fetched once the lobby is on screen so
+// it never delays time-to-playable.
+const Slide = lazy(() => import('./ride/Slide'))
 
 /** The longest the loading screen waits for your avatar before the game opens anyway. */
 const AVATAR_WAIT_MS = 10000
@@ -50,7 +53,7 @@ const AVATAR_WAIT_MS = 10000
  * The scene's start-up, in a component of its own so each step re-renders only this,
  * not the whole scene (seconds of work on a slow phone): every shader compiled
  * (ShaderWarmup - last in the scene, so everything's in it), then the first real frame
- * drawn (`onSceneIn`), then the track up the mountain, fetched only now so it never
+ * drawn (`onSceneIn`), then the slide down the mountain, fetched only now so it never
  * delays time-to-playable.
  */
 function StartUp({ onSceneIn }) {
@@ -63,8 +66,8 @@ function StartUp({ onSceneIn }) {
     <>
       {warmedUp && firstFrame && (
         <Suspense fallback={null}>
-          {/* Built afresh for each world's track (the ticker switches it first). */}
-          <Push key={world} />
+          {/* Built afresh for each world's slide (the ticker switches it first). */}
+          <Slide key={world} />
         </Suspense>
       )}
       <ShaderWarmup onDone={handleWarmedUp} />
@@ -101,6 +104,39 @@ function PauseForAds() {
   return null
 }
 
+/**
+ * Pictures made with the game's own renderer: the HUD's glossy 3D icons once at start-up
+ * (a few an animation frame, while the loading screen is still up), and the SLEDS
+ * panel's portraits a couple a frame as they're asked for.
+ */
+function SledIcons() {
+  const gl = useThree((s) => s.gl)
+  useEffect(() => {
+    attachIconRenderer(gl)
+    renderIcons3d(gl, requestAnimationFrame)
+  }, [gl])
+  useFrame(() => processIconQueue(2))
+  return null
+}
+
+/**
+ * A screen taller than it's wide (a phone held upright) gets a wider view: with the
+ * landscape field of view it would see only a narrow slice of the slide and the lobby.
+ */
+function ScreenFit() {
+  const size = useThree((s) => s.size)
+  // FollowCamera eases the camera to it (and wider still as you speed up).
+  useEffect(() => setBaseFov(size.width / Math.max(1, size.height)), [size])
+  return null
+}
+
+/** The sky behind everything: the world's horizon, whatever the canvas shows past the sky dome. */
+function ClearColor({ color }) {
+  const gl = useThree((s) => s.gl)
+  useEffect(() => gl.setClearColor(color), [gl, color])
+  return null
+}
+
 /** Keeps the camera's far plane in step with the preset's view distance. */
 function ViewDistance({ far }) {
   const get = useThree((s) => s.get)
@@ -122,6 +158,10 @@ function ViewDistance({ far }) {
 export function GameScene({ onReady }) {
   const { game } = useBloxity()
   const settings = useQuality((s) => s.settings)
+  // The world's look (worldLook.js): applied before the lobby, sky and light below are
+  // built from it, and they're rebuilt (keyed by world) when you change worlds.
+  const worldId = useGame((s) => WORLDS[s.profile.world]?.id ?? WORLDS[0].id)
+  const look = useMemo(() => applyWorldLook(worldId), [worldId])
   const antialias = useQuality((s) => s.antialias)
   const degrade = useQuality((s) => s.degrade)
 
@@ -225,35 +265,33 @@ export function GameScene({ onReady }) {
         camera={{ position: [0, 6, 26], fov: 60, near: 0.5, far: settings.viewDistance }}
         onCreated={handleCreated}
       >
-        <fog attach="fog" args={[FOG.color, settings.fogNear, settings.viewDistance * 0.95]} />
+        <fog attach="fog" args={[look.sky.horizon, settings.fogNear, settings.viewDistance * 0.95]} />
+        <ClearColor color={look.sky.horizon} />
         <ViewDistance far={settings.viewDistance} />
+        <ScreenFit />
         <PerformanceMonitor bounds={() => [45, Infinity]} onDecline={handleDecline} />
 
-        <Sky />
-        <Lighting />
-        <World />
+        <Sky clouds={look.clouds} />
+        <Lighting lights={look.lights} />
+        <World key={worldId} />
         <WorldLabels />
-        <DumbbellShop />
-        <EggDisplays />
-        <Portal />
+        <Pedestals />
+        <Slingshot />
         <Leaderboards />
-        <TutorialArrows />
         <Particles />
-        <SphinxShowcase />
-        <RewardCrab />
-        <Pets />
+        {settings.particles && <SpeedFX />}
+        {settings.particles && <SpeedLines />}
         <RemotePlayers />
         <RemoteAvatars />
         <Player onAvatarReady={handleAvatarReady} />
+        <Trail />
+        <Snowfall weather={look.weather} />
         <ChatBubbles />
         <PauseForAds />
-        <Boulders />
-        <Auras />
         <BlobShadows />
-        <GainFX />
+        <SledIcons />
 
         <FollowCamera />
-        <LiftInput />
         <StartUp onSceneIn={handleSceneIn} />
         <PerfProbe />
         {showDevPerf && DevPerf && (

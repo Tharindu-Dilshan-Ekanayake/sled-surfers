@@ -17,40 +17,39 @@ export function send(type, payload) {
 }
 
 export const actions = {
-  /** One click: a lift with your dumbbell. */
-  lift: () => send('lift'),
-  enterZone: (zone) => send('enterZone', { zone }),
-  leaveZone: () => send('leaveZone'),
-  /** Starts a push; only counts standing on the PUSH ZONE (walking onto it sends it). */
-  startPush: () => send('startPush'),
-  /** Where you've got to up the track (a few times a second while pushing). */
-  pushAt: (meter, x) => send('pushAt', { meter, x }),
-  endPush: (reason) => send('endPush', { reason }),
-  /** The boulder rolled into Wins orb `index`. */
-  collectOrb: (index) => send('collectOrb', { index }),
+  /** Let go of the slingshot, standing on its pad: a ride begins. */
+  startRide: (id, race) => send('startRide', race ? { id, race } : { id }),
+  /** Join the race whose window is open. */
+  joinRace: () => send('joinRace'),
+  /** Where the ride has got to (a few times a second). */
+  rideAt: (s, x, y) => send('rideAt', { s, x, y }),
+  /** Pickups carry where the sled is (`s`): the server's last report may be behind a fast sled. */
+  collectCoin: (index, s) => send('collectCoin', { index, s }),
+  collectDiamond: (index, s) => send('collectDiamond', { index, s }),
+  /** A wall smashed or a boost pad hit, for the daily tasks. */
+  rideHit: (kind, index, s) => send('rideHit', { kind, index, s }),
+  /** The ride's over: bank it. */
+  endRide: (s, id) => send('endRide', { s, id }),
+  upgrade: (kind) => send('upgrade', { kind }),
+  buySled: (id) => send('buySled', { id }),
+  equipSled: (id) => send('equipSled', { id }),
+  buyTrail: (id) => send('buyTrail', { id }),
+  equipTrail: (id) => send('equipTrail', { id }),
+  setWorld: (world) => send('setWorld', { world }),
+  claimGift: (index) => send('claimGift', { index }),
+  claimAllGifts: () => send('claimAllGifts'),
+  claimTask: (index) => send('claimTask', { index }),
+  claimTaskChest: () => send('claimTaskChest'),
+  claimFreeCoins: () => send('claimFreeCoins'),
+  /** Today's login-streak prize. */
+  claimLogin: () => send('claimLogin'),
+  notifyMe: () => send('notifyMe'),
+  /** A rewarded ad watched to the end: the server checks the token with Boxity. */
+  adReward: (placement, rewardToken) => send('adReward', { placement, rewardToken }),
+  /** Something from the Diamond shop: a coin pack, a premium sled, Gold Rush early. */
+  buyDiamondItem: (id) => send('buyDiamondItem', { id }),
   /** A Boxity emote started ('' when it stops), so the room sees it. */
   emote: (id) => send('emote', { id }),
   /** Back to the spawn point (Boxity's "Reset Character"). */
   respawn: () => send('respawn'),
-  rebirth: () => send('rebirth'),
-  skipRebirth: () => send('skipRebirth'),
-  buyDumbbell: (id) => send('buyDumbbell', { id }),
-  equipDumbbell: (id) => send('equipDumbbell', { id }),
-  equipAura: (id) => send('equipAura', { id }),
-  /** Buys Muscle pack `index` (0-2) from under the level bar. */
-  buyPack: (index) => send('buyPack', { index }),
-  hatch: (eggId, count = 1) => send('hatch', { eggId, count }),
-  openEggItem: (itemId) => send('openEggItem', { itemId }),
-  equipPet: (uid) => send('equipPet', { uid }),
-  unequipPet: (uid) => send('unequipPet', { uid }),
-  equipBestPets: () => send('equipBest'),
-  deletePet: (uid) => send('deletePet', { uid }),
-  usePotion: (itemId) => send('usePotion', { itemId }),
-  claimDaily: (day) => send('claimDaily', { day }),
-  claimPlaytime: (index) => send('claimPlaytime', { index }),
-  claimFreeReward: () => send('claimFreeReward'),
-  setSetting: (key, value) => send('setting', { key, value }),
-  portal: () => send('portal'),
-  /** Buys a shop item with Wins; see shop.js. */
-  purchase: (productId) => send('purchase', { productId }),
 }

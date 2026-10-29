@@ -89,3 +89,44 @@ export function Panel({ title, icon, width = 920, children, footer, onClose }) {
 }
 
 export default Panel
+
+/**
+ * The reference's bright panels (WORLDS, SLEDS, TRAILS, DAILY TASKS, GIFTS): a light
+ * body under a coloured header with the big outlined title, the red X on its corner.
+ * Escape or a click outside closes it.
+ *
+ * @param {{ title: string, icon?: string, header: string, width?: number,
+ *           children: React.ReactNode, side?: React.ReactNode }} props `header` is the
+ *   header's CSS background; `side` hangs off the panel's left edge (tabs).
+ */
+export function BrightPanel({ title, icon, header, width = 1080, children, side }) {
+  const close = useGame((s) => s.closePanel)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [close])
+  return (
+    <div
+      className="pp-font pointer-events-auto absolute inset-0 z-40 flex items-center justify-center"
+      style={{ background: 'rgba(20, 30, 60, 0.35)', backdropFilter: 'blur(2px)' }}
+      onPointerDown={(e) => {
+        if (e.target === e.currentTarget) close()
+      }}
+    >
+      <div className="pp-panel-in relative" style={{ width: `min(${u(width)}, 96vw)` }}>
+        {side && <div className="absolute flex flex-col" style={{ right: '100%', top: u(190), gap: u(14), marginRight: u(-8) }}>{side}</div>}
+        <div style={{ borderRadius: u(30), border: `${u(7)} solid #14214a`, background: '#eaf3ff', overflow: 'hidden', boxShadow: `0 ${u(10)} ${u(30)} rgba(0,0,0,.35)` }}>
+          <div className="relative flex items-center justify-center" style={{ height: u(96), background: header, borderBottom: `${u(5)} solid rgba(20,33,74,.35)`, gap: u(12), fontSize: u(64) }}>
+            {icon && <Icon name={icon} size={u(80)} style={{ position: 'absolute', left: u(22) }} />}
+            <StrokeText stroke={u(11)}>{title}</StrokeText>
+          </div>
+          <div style={{ padding: u(22), maxHeight: '72vh', overflowY: 'auto' }}>{children}</div>
+        </div>
+        <CloseButton onClick={close} style={{ right: u(-18), top: u(-14) }} />
+      </div>
+    </div>
+  )
+}

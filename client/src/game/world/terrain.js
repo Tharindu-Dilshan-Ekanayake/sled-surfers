@@ -1,14 +1,13 @@
 import { hash2, mulberry32 } from '@shared/rng'
-import { PLAZA, TRACK_START_Z } from '@shared/world'
+import { CASTLE, LAUNCH_Z, PLAZA } from '@shared/world'
 
 import { STYLE } from '../materials'
-import { RIM_X } from '../push/path'
 import { PALETTE } from '../sceneStyle'
 
 /**
- * The mountains ringing the plaza: tall, jagged grey voxel peaks, turning into
- * terracotta cliffs with grass on top either side of the boulder track, plus blocky
- * pines on the terraces.
+ * The mountains ringing the plaza: tall, jagged brown voxel cliffs with snow on every
+ * step, plus blocky snow-capped pines on the terraces. North of the slingshot the slide
+ * (ride/slideChunk.js) brings its own.
  *
  * Heights come from a smooth value-noise field quantised into terraces, sampled on a
  * coarse grid and greedy-merged into as few boxes as possible: a few hundred instances
@@ -16,10 +15,10 @@ import { PALETTE } from '../sceneStyle'
  */
 
 const CELL = 4
-const BOUNDS = { minX: -176, maxX: 156, minZ: -150, maxZ: 136 }
-/** The track climbs north out of the plaza through this gap (its own walls fill it). */
-const CORRIDOR = { minX: -RIM_X, maxX: RIM_X, minZ: -10000, maxZ: TRACK_START_Z }
-/** Terrain this close to the track is terracotta cliff; further out, grey rock. */
+const BOUNDS = { minX: -176, maxX: 156, minZ: LAUNCH_Z - 14, maxZ: 136 }
+/** The slide drops north out of the plaza through this gap (its own walls and banks fill it). */
+const CORRIDOR = { minX: -38, maxX: 38, minZ: -10000, maxZ: PLAZA.minZ }
+/** Terrain this close to the slide is a warmer brown; further out, darker. */
 const CLIFF_REACH = 30
 const STEP = 3
 
@@ -47,10 +46,15 @@ function distanceOutside(rect, x, z) {
   return Math.hypot(dx, dz)
 }
 
+/** The ice castle's plateau behind the plaza, flat and low enough to see the castle over the cliffs. */
+const CASTLE_YARD = { minX: CASTLE.x - 22, maxX: CASTLE.x + 22, minZ: PLAZA.maxZ + 8, maxZ: CASTLE.z + 16 }
+export const CASTLE_BASE = 9
+
 /** Terrain height at a cell centre, or 0 where the ground is open. */
 export function terrainHeight(x, z) {
   if (distanceOutside(PLAZA, x, z) === 0) return 0
   if (distanceOutside(CORRIDOR, x, z) === 0) return 0
+  if (distanceOutside(CASTLE_YARD, x, z) === 0) return CASTLE_BASE
   const d = Math.min(distanceOutside(PLAZA, x, z), distanceOutside(CORRIDOR, x, z))
   // A low first terrace right at the plaza edge, then big jagged steps up.
   const base = d < 6 ? 6 : 9 + Math.floor(d / 11) * 7
@@ -76,19 +80,30 @@ const TREE_HALF_WIDTH = 2.6
  */
 export function addTree(blocks, x, base, z, scale = 1, rand = Math.random) {
   const s = scale
+  if (PALETTE.tree === 'cactus') {
+    // A saguaro: a tall trunk and two arms, as Gold Rush's cliffs grow.
+    const green = PALETTE.leaves[Math.floor(rand() * PALETTE.leaves.length)]
+    blocks.addOn(x, base, z, 1.1 * s, 5.2 * s, 1.1 * s, green, STYLE.STUDS)
+    blocks.addOn(x - 1.1 * s, base + 2 * s, z, 1.1 * s, 0.7 * s, 0.7 * s, green, STYLE.STUDS)
+    blocks.addOn(x - 1.45 * s, base + 2 * s, z, 0.7 * s, 2 * s, 0.7 * s, green, STYLE.STUDS)
+    blocks.addOn(x + 1.1 * s, base + 2.9 * s, z, 1.1 * s, 0.7 * s, 0.7 * s, green, STYLE.STUDS)
+    blocks.addOn(x + 1.45 * s, base + 2.9 * s, z, 0.7 * s, 1.6 * s, 0.7 * s, green, STYLE.STUDS)
+    return
+  }
   const trunk = 2.6 * s
   blocks.addOn(x, base, z, 0.9 * s, trunk, 0.9 * s, PALETTE.trunk)
 
+  // Snow on top of every tier (STYLE.TERRAIN's cap).
   const greens = PALETTE.leaves
   const green = greens[Math.floor(rand() * greens.length)]
   const tiers = [5.2, 4.3, 3.4, 2.5, 1.6]
   let y = base + trunk - 0.4 * s
   for (const width of tiers) {
     const w = width * s
-    blocks.addOn(x, y, z, w, 1.6 * s, w, green)
+    blocks.addOn(x, y, z, w, 1.6 * s, w, green, STYLE.TERRAIN)
     y += 1.35 * s
   }
-  blocks.addOn(x, y, z, 0.8 * s, 1.1 * s, 0.8 * s, green)
+  blocks.addOn(x, y, z, 0.8 * s, 1.1 * s, 0.8 * s, green, STYLE.TERRAIN)
 }
 
 /** Builds the mountain ring into `blocks` and returns how many trees it planted. */
@@ -120,9 +135,9 @@ export function buildTerrain(blocks, { treeDensity = 1 } = {}) {
     if (run.kind === 2) {
       blocks.addOn(x, -0.5, z, width, run.h + 0.5, depth, PALETTE.cliff, STYLE.TERRAIN)
     } else {
-      // Grey rock in a few shades, by height, so the terraces read.
+      // Brown rock in a few shades, by height, so the terraces read; snow on each.
       const shade = PALETTE.rock[(run.h / STEP) % PALETTE.rock.length]
-      blocks.addOn(x, -0.5, z, width, run.h + 0.5, depth, shade, STYLE.STUDS)
+      blocks.addOn(x, -0.5, z, width, run.h + 0.5, depth, shade, STYLE.TERRAIN)
     }
   }
 
@@ -170,7 +185,9 @@ export function buildTerrain(blocks, { treeDensity = 1 } = {}) {
     for (let i = 1; i < cols - 1; i += 1) {
       const h = heights[j * cols + i]
       if (h === 0) continue
-      const chance = (kinds[j * cols + i] === 2 ? 0.16 : 0.05) * treeDensity
+      // Thickest on the terraces right round the plaza, where you see them most.
+      const near = Math.min(distanceOutside(PLAZA, BOUNDS.minX + (i + 0.5) * CELL, BOUNDS.minZ + (j + 0.5) * CELL), distanceOutside(CORRIDOR, BOUNDS.minX + (i + 0.5) * CELL, BOUNDS.minZ + (j + 0.5) * CELL)) < 36
+      const chance = (kinds[j * cols + i] === 2 ? 0.16 : near ? 0.15 : 0.05) * treeDensity
       if (hash2(i, j, 77) > chance) continue
       const flat =
         heights[j * cols + i - 1] === h &&
@@ -189,9 +206,25 @@ export function buildTerrain(blocks, { treeDensity = 1 } = {}) {
     }
   }
 
-  // Pines along the top of the walls round the plaza - over the Train Zones on the west,
-  // and round the other sides - rather than down beside the gyms or the track's gate,
-  // where they'd hide things.
+  // Blocks of blue ice and snowy rocks scattered over the terraces round the plaza.
+  const iceRand = mulberry32(17)
+  for (let j = 1; j < rows - 1; j += 1) {
+    for (let i = 1; i < cols - 1; i += 1) {
+      const h = heights[j * cols + i]
+      if (h === 0 || hash2(i, j, 91) > 0.09) continue
+      const x = BOUNDS.minX + (i + 0.5) * CELL + (iceRand() - 0.5) * 2
+      const z = BOUNDS.minZ + (j + 0.5) * CELL + (iceRand() - 0.5) * 2
+      if (Math.min(distanceOutside(PLAZA, x, z), distanceOutside(CORRIDOR, x, z)) > 40) continue
+      if (placed.some((t) => Math.max(Math.abs(t.x - x), Math.abs(t.z - z)) < t.reach + 1.2)) continue
+      const size = 1 + iceRand() * 1.2
+      const ice = iceRand() < 0.6
+      const color = ice ? (iceRand() < 0.5 ? '#bfe6fb' : '#a8daf7') : PALETTE.snow
+      blocks.add(x, h + size * 0.35, z, size, size, size, color, STYLE.SMOOTH, iceRand() * Math.PI, (iceRand() - 0.5) * 0.4, (iceRand() - 0.5) * 0.4)
+      if (iceRand() < 0.5) blocks.add(x + size * 0.7, h + size * 0.2, z + (iceRand() - 0.5), size * 0.55, size * 0.55, size * 0.55, color, STYLE.SMOOTH, iceRand() * Math.PI, 0.2, 0.3)
+    }
+  }
+
+  // Pines along the top of the walls round the plaza, where they hide nothing.
   const wallTrees = [
     [PLAZA.minX - 3, 26],
     [PLAZA.minX - 3, 10],
@@ -209,12 +242,13 @@ export function buildTerrain(blocks, { treeDensity = 1 } = {}) {
     placed.push({ x, z, reach })
     addTree(blocks, x, h, z, 1.15, rand)
   }
-  // And a couple inside the plaza's far corners, where they hide nothing.
-  for (const [x, z] of [
-    [PLAZA.maxX - 4, PLAZA.maxZ - 5],
-    [26, PLAZA.maxZ - 3],
+  // And a couple inside the plaza's far corners, where they hide nothing. Their
+  // canopies overlap, so they're different sizes: no tier level with another.
+  for (const [x, z, scale] of [
+    [PLAZA.maxX - 4, PLAZA.maxZ - 5, 1.15],
+    [26, PLAZA.maxZ - 3, 1],
   ]) {
-    addTree(blocks, x, 0, z, 1.15, rand)
+    addTree(blocks, x, 0, z, scale, rand)
   }
 
   return { trees }

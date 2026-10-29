@@ -1,11 +1,11 @@
 import { schema, t } from '@colyseus/schema'
 
-/** `pushMeter` while not pushing. */
-export const NOT_PUSHING = -1000
+/** `rideMeter` while not riding. */
+export const NOT_RIDING = -1000
 
 /**
  * Synced state, kept deliberately small: only what other players need to draw you.
- * Everything private (inventory, items, boosts...) goes to its owner alone as
+ * Everything private (Coins, Diamonds, upgrades, tasks...) goes to its owner alone as
  * 'profile' messages, never through the shared state.
  */
 export const PlayerState = schema(
@@ -17,31 +17,24 @@ export const PlayerState = schema(
     y: t.float32(),
     z: t.float32(),
     rotY: t.float32(),
-    /** 'idle' | 'walk' | 'train' (in a Train Zone) | 'jump' | 'push' | 'dance' */
+    /** 'idle' | 'walk' | 'jump' | 'pull' (on the slingshot) | 'ride' | 'dance' */
     anim: t.string(),
     /** The Boxity emote they're playing ('' = none), and when it started (ms since its own epoch, for its phase). */
     emote: t.string(),
     emoteAt: t.float64(),
     /** What their Bloxity avatar wears, as JSON `{ equipped, proportions }` ('' = base). */
     look: t.string(),
-    dumbbellId: t.string(),
-    /** The aura they wear ('' = none). */
-    aura: t.string(),
-    /** Equipped pet species, at most 3. */
-    petIds: t.array('string'),
-    /**
-     * Up the mountain: where along the track they are (NOT_PUSHING in the plaza), how far
-     * across, and whether they're pushing a boulder ('push') or walking a SAFEZONE ('free').
-     */
-    pushMeter: t.float32(),
-    pushX: t.float32(),
-    pushPhase: t.string(),
-    muscle: t.float64(),
-    /** The world they're in (WORLDS index): others only see their climb in the same one. */
+    /** The sled they ride and the trail behind it. */
+    sled: t.string(),
+    trail: t.string(),
+    /** Down the slide: how far (NOT_RIDING in the lobby), how far across, and how high. */
+    rideMeter: t.float32(),
+    rideX: t.float32(),
+    rideY: t.float32(),
+    /** The world they're in (WORLDS index): others only see their ride in the same one. */
     world: t.uint8(),
-    wins: t.float64(),
-    rebirths: t.uint16(),
-    level: t.uint16(),
+    /** Their best ride in that world, for the progress bar. */
+    best: t.float32(),
   },
   'PlayerState',
 )

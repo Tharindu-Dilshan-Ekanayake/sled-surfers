@@ -2,8 +2,8 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useRef } from 'react'
 import { Vector3 } from 'three'
 
-import { feetPoint } from './push/path'
-import { push } from './push/pushControl'
+import { slidePoint } from './ride/path'
+import { ride } from './ride/rideControl'
 import { runtime } from './runtime'
 
 /** How high above the player's feet the camera aims. */
@@ -29,14 +29,20 @@ const _desired = new Vector3()
 const _target = new Vector3()
 /** Where the camera is looking, eased towards its target (one camera, so module-level). */
 const _lookAt = new Vector3()
+/** Where the sled was last frame, and how far it has moved since. */
+const _sledWas = new Vector3()
+const _sledMove = new Vector3()
+/** Whether the chase camera was already following the sled last frame. */
+const chase = { following: false }
+const _shake = new Vector3()
 
-/** Up the track: how far behind and above the pusher the chase camera rides. */
-const CHASE_BEHIND = 7.5
-const CHASE_HEIGHT = 4.6
-/** It looks this far ahead of the pusher, over the boulder, up the track. */
-const CHASE_AHEAD = 5
-const CHASE_LOOK_HEIGHT = 2
-const CHASE_SMOOTHING = 6
+/** Down the slide: how far behind and above the sled the chase camera rides. */
+const CHASE_BEHIND = 7.2
+const CHASE_HEIGHT = 3.6
+/** It looks this far ahead of the sled, down the slide. */
+const CHASE_AHEAD = 10
+const CHASE_LOOK_HEIGHT = 0.9
+const CHASE_SMOOTHING = 7
 
 const smoothstep = (a, b, x) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)))
@@ -44,27 +50,36 @@ const smoothstep = (a, b, x) => {
 }
 
 /**
- * Where the chase camera wants to be while pushing, and what it looks at: behind and
- * above you looking up the track over the boulder; pulled back and swung aside when it
- * crushes you; swung out to your side at the top, onto you cheering by your boulder
- * with THE TOP's trophy beyond.
+ * Where the chase camera wants to be on the slingshot and down the slide, and what it
+ * looks at: behind and above you looking down the slide (further back the faster you
+ * go); swung round to your side, onto you, once you've stopped.
  */
+/** Eases the field of view towards `target`: a wider view the faster you go. */
+function easeFov(camera, target, delta) {
+  const fov = camera.fov + (target - camera.fov) * (1 - Math.exp(-3 * delta))
+  if (Math.abs(fov - camera.fov) < 0.005) return
+  camera.fov = fov
+  camera.updateProjectionMatrix()
+}
+
 function chaseTarget(out, look) {
-  const m = push.meter
-  const x = push.x
-  if (push.phase === 'top') {
-    const k = smoothstep(0, 1.4, (performance.now() - push.endedAt) / 1000)
-    feetPoint(m - CHASE_BEHIND * (1 - k) - 1.5 * k, x * 0.5 + 3 * k, out)
-    out.y += CHASE_HEIGHT - 1.4 * k
-    feetPoint(m + 3.5 * k, x, look)
-    look.y += 1.8 + 0.8 * k
+  const p = ride.position
+  if (ride.phase === 'pull' || !ride.sim) {
+    out.set(p.x, p.y + 3.3, p.z + 6.2 + ride.power * 0.8)
+    look.set(p.x, p.y + 1.1, p.z - 12)
     return
   }
-  const crushed = push.phase === 'crushed' ? smoothstep(0, 0.8, (performance.now() - push.endedAt) / 1000) : 0
-  feetPoint(m - CHASE_BEHIND - 4 * crushed, x * 0.5 + 2.5 * crushed, out)
-  out.y += CHASE_HEIGHT + 2.5 * crushed
-  feetPoint(m + CHASE_AHEAD * (1 - crushed), x * 0.7, look)
-  look.y += CHASE_LOOK_HEIGHT * (1 - crushed) + 0.6 * crushed
+  const sim = ride.sim
+  if (ride.phase === 'result') {
+    const k = smoothstep(0, 1.2, (performance.now() - ride.stoppedAt) / 1000)
+    slidePoint(sim.s - CHASE_BEHIND * (1 - k) + 3.2 * k, sim.x * 0.6 + 5.2 * k * (sim.x > 0 ? -1 : 1), CHASE_HEIGHT - 1.4 * k, out)
+    slidePoint(sim.s + CHASE_AHEAD * (1 - k), sim.x, CHASE_LOOK_HEIGHT + 0.3 * k, look)
+    return
+  }
+  const back = CHASE_BEHIND + Math.min(4, sim.v * 0.08)
+  slidePoint(sim.s - back, sim.x * 0.6, 0, out)
+  out.y = Math.max(out.y, sim.y) + CHASE_HEIGHT
+  slidePoint(sim.s + CHASE_AHEAD, sim.x * 0.75, CHASE_LOOK_HEIGHT, look)
 }
 
 /**
@@ -73,9 +88,9 @@ function chaseTarget(out, look) {
  * Mouse: drag (either button) orbits, wheel zooms. Touch: one-finger drag orbits (the
  * joystick owns the left side of the screen as a separate element), pinch zooms.
  *
- * Orbit state lives in `runtime.camera`, so after a push the camera can be handed back
- * exactly where it was taken from. While pushing it's a chase camera up the track
- * instead.
+ * Orbit state lives in `runtime.camera`, so after a ride the camera can be handed back
+ * exactly where it was taken from. On the slingshot and down the slide it's a chase
+ * camera instead.
  */
 export function FollowCamera() {
   const camera = useThree((s) => s.camera)
@@ -158,17 +173,36 @@ export function FollowCamera() {
 
   useFrame((_state, rawDelta) => {
     const delta = Math.min(rawDelta, 0.05)
-    if (runtime.camera.mode === 'push') {
+    if (runtime.camera.mode === 'ride') {
+      // Carried along with the sled, then eased towards its place behind it: the swoop
+      // from the orbit camera stays smooth, but the camera never lags further behind the
+      // faster you go.
+      if (chase.following) {
+        _sledMove.subVectors(ride.position, _sledWas)
+        camera.position.add(_sledMove)
+        _lookAt.add(_sledMove)
+      }
+      _sledWas.copy(ride.position)
+      chase.following = true
       // Eased towards, so taking over from the orbit camera is a swoop, not a cut.
       chaseTarget(_desired, _target)
       const k = 1 - Math.exp(-CHASE_SMOOTHING * delta)
       camera.position.lerp(_desired, k)
       _lookAt.lerp(_target, k)
+      // A jolt when you smash through a wall.
+      const smashed = performance.now() - ride.smashAt
+      if (smashed < 280) {
+        const shake = (1 - smashed / 280) * 0.22
+        camera.position.add(_shake.set(Math.sin(smashed * 0.09) * shake, Math.cos(smashed * 0.12) * shake, 0))
+      }
       camera.lookAt(_lookAt)
+      easeFov(camera, runtime.camera.baseFov + (ride.phase === 'ride' ? Math.min(16, Math.max(0, ride.speed - 12) * 0.16) : 0), delta)
       return
     }
-    // Whoever's being followed: you in the plaza, or up the mountain in a SAFEZONE.
-    const p = runtime.focus ?? runtime.player.position
+    easeFov(camera, runtime.camera.baseFov, delta)
+    chase.following = false
+    // You, in the lobby.
+    const p = runtime.player.position
     _target.set(p.x, p.y + LOOK_HEIGHT, p.z)
 
     // Spherical -> cartesian. yaw 0 puts the camera south of the player, looking north.
@@ -180,7 +214,7 @@ export function FollowCamera() {
       _target.z + Math.cos(yaw) * horizontal,
     )
 
-    // After a push the camera is far up the mountain; jump back rather than swoop.
+    // After a ride the camera is far down the slide; jump back rather than swoop.
     if (runtime.camera.snap) {
       runtime.camera.snap = false
       initialised.current = false

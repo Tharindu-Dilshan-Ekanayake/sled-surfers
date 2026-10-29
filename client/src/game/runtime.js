@@ -7,58 +7,53 @@ import { SPAWN } from '@shared/world'
  *
  * Deliberately outside React and zustand: it changes every frame, nothing should
  * re-render because of it, and every reader lives in a `useFrame` or a timer. UI that
- * needs a slow-changing derivative of it (which zone the player is in, say) gets it
- * from the 10 Hz game ticker, which is the only thing that copies from here into the
- * store.
+ * needs a slow-changing derivative of it (whether you're on the slingshot's pad, say)
+ * gets it from the 10 Hz game ticker, which is the only thing that copies from here
+ * into the store.
  */
 export const runtime = {
   player: {
     position: new Vector3(SPAWN.x, 0, SPAWN.z),
-    /** Facing, radians about +Y. PI faces north (-Z), towards the boulder. */
+    /** Facing, radians about +Y. PI faces north (-Z), towards the slingshot. */
     yaw: Math.PI,
     speed: 0,
     grounded: true,
-    /** The Train Zone whose bench you're sat on, or -1. */
-    bench: -1,
-    /** When the win dance (back in the lobby after cashing in) started; 0 when not dancing. */
+    /** When the win dance (back in the lobby after a ride) started; 0 when not dancing. */
     danceAt: 0,
-    /** 'idle' | 'walk' | 'train' (sat on a bench) | 'jump' | 'push' | 'dance' - what other players see. */
+    /** 'idle' | 'walk' | 'jump' | 'pull' | 'ride' | 'dance' - what other players see. */
     anim: 'idle',
-    /** Set when the controller should ignore input (pushing, cutscenes). */
+    /** Set when the controller should ignore input (on the slingshot, riding). */
     frozen: false,
-    /** performance.now() of the last lift, for the curl. */
-    liftedAt: 0,
     /** The Boxity emote playing: `{ id, at }` (at = performance.now() it started), or null. */
     emote: null,
   },
 
-  /** Touch input, written by the on-screen joystick. -1..1, +y = forward. */
+  /** Touch input, written by the on-screen controls. -1..1, +y = forward. */
   input: {
     joyX: 0,
     joyY: 0,
     jump: false,
+    /** Riding: the on-screen steer, jump and rocket buttons. */
+    steer: 0,
+    rocket: false,
   },
 
   camera: {
-    /** 'follow' orbits the player; 'push' is the chase camera up the track (see push/Push.jsx). */
+    /** 'follow' orbits the player; 'ride' is the chase camera down the slide. */
     mode: 'follow',
     yaw: 0,
-    pitch: 0.36,
-    distance: 11,
+    pitch: 0.26,
+    distance: 11.5,
+    /** Field of view at rest (wider on a phone held upright); speed widens it down the slide. */
+    baseFov: 60,
     /** Set to jump the follow camera straight to its target next frame. */
     snap: false,
   },
 
-  /** What the sun's shadow box centres on while the camera is up the track with you. */
+  /** What the sun's shadow box centres on while the camera is down the slide with you. */
   focus: null,
 
-  /**
-   * Other players' pets, written by the multiplayer layer: `{ id, position, yaw, hop }`
-   * per pet. Drawn by the same instanced pet meshes as yours.
-   */
-  remotePets: [],
-
-  /** Walls that come and go at runtime, e.g. locked Train Zones. */
+  /** Walls that come and go at runtime (none at the moment; the controller reads it). */
   dynamicColliders: [],
 
   /**
@@ -72,4 +67,12 @@ export const runtime = {
 export function respawn() {
   runtime.player.position.set(SPAWN.x, 0, SPAWN.z)
   runtime.player.yaw = Math.PI
+}
+
+/**
+ * The field of view at rest for a screen of this aspect (width / height): wider on a phone
+ * held upright, which would otherwise see only a narrow slice of the slide and lobby.
+ */
+export function setBaseFov(aspect) {
+  runtime.camera.baseFov = aspect < 1 ? 60 + 22 * Math.min(1, (1 - aspect) / 0.55) : 60
 }

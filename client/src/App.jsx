@@ -3,7 +3,6 @@ import { useCallback, useEffect, useState } from 'react'
 import GameController from './GameController'
 import { useGame } from './store/game'
 import GameScene from './game/GameScene'
-import HatchOverlay from './ui/HatchOverlay'
 import HUD from './ui/hud/HUD'
 import LoadingScreen from './ui/LoadingScreen'
 import NameplateLayer from './ui/NameplateLayer'
@@ -14,6 +13,7 @@ import ReplacedOverlay from './ui/ReplacedOverlay'
 import ScreenFade from './ui/ScreenFade'
 import TouchControls from './ui/TouchControls'
 import { platformReady } from './bloxity/platform'
+import { installReturnPrompts } from './ui/returnPrompts'
 
 function App() {
   const [ready, setReady] = useState(false)
@@ -30,6 +30,7 @@ function App() {
     if (!ready) return
     requestAnimationFrame(() => performance.mark('pp:hud-shown'))
     prefetchPanels()
+    installReturnPrompts()
   }, [ready])
 
   return (
@@ -43,7 +44,6 @@ function App() {
           <PopupLayer />
           <HUD />
           <Panels />
-          <HatchOverlay />
         </>
       )}
       <ScreenFade />
