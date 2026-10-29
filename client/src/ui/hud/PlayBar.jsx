@@ -9,7 +9,7 @@ import { useGame } from '../../store/game'
 import Icon from '../Icon'
 import StrokeText from '../StrokeText'
 import { ChunkyButton } from './parts'
-import { GRADIENTS, u } from './style'
+import { GRADIENTS, fitFont, u } from './style'
 
 /** An upgrade card: its name, a picture, its level in a badge, and the price to level it. */
 function Card({ title, color, edge, image, level, price, currency, affordable, maxed, onBuy, caption, hint }) {
@@ -19,7 +19,7 @@ function Card({ title, color, edge, image, level, price, currency, affordable, m
       title={hint}
       style={{ width: u(192), padding: u(9), paddingTop: u(4), background: color, borderWidth: u(5), borderRadius: u(20), '--edge': edge }}
     >
-      <span style={{ fontSize: u(34) }}>
+      <span style={{ fontSize: u(fitFont(title, 34, 170)), whiteSpace: 'nowrap' }}>
         <StrokeText stroke={u(7)}>{title}</StrokeText>
       </span>
       <div className="pp-well relative flex items-center justify-center" style={{ width: '100%', height: u(132), background: 'radial-gradient(90% 80% at 50% 40%, #ffffff 0%, #fbeef2 60%, #efdbe2 100%)', borderRadius: u(14) }}>
